@@ -26,11 +26,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 👇 Extra step to confirm vite config file exists
+      # 👇 Debug: list available vite config files
       - name: List config files
         run: ls -l vite.config*
 
-      # 👇 Build using GitHub Pages config + echo confirmation
+      # 👇 Build with GitHub Pages config
       - name: Build Vite project (GitHub Pages config)
         run: |
           echo ">>> Using vite.config.gh.js for GitHub Pages build"
@@ -44,3 +44,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
