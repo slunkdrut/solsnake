@@ -26,8 +26,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build project
-        run: npm run build
+      # 👇 Build using GitHub-specific config
+      - name: Build project (GitHub Pages config)
+        run: npm run build -- --config vite.config.gh.js
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -38,7 +39,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment:
-      name: github-pages   # 👈 required so GitHub attaches URL
+      name: github-pages   # ✅ attaches live URL
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
