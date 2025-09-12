@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phaser + Solana Test</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; text-align: center; }
+    #wallet-section { margin: 20px; }
+    button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+    #output { margin-top: 10px; font-weight: bold; }
+  </style>
+  <!-- Phaser CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.js"></script>
+</head>
+<body>
+  <div id="wallet-section">
+    <h1>🎮 Phaser + 🔗 Solana Wallet Test</h1>
+    <button id="connect">Connect Wallet</button>
+    <div id="output"></div>
+  </div>
+
+  <script type="module">
+    import { Connection, clusterApiUrl, PublicKey } from "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.78.0/+esm";
+
+    const connectButton = document.getElementById("connect");
+    const output = document.getElementById("output");
+
+    connectButton.addEventListener("click", async () => {
+      try {
+        if (!window.solana) {
+          output.innerText = "❌ Phantom Wallet not found. Please install it.";
+          return;
+        }
+
+        // Request wallet connection
+        const resp = await window.solana.connect();
+        const publicKey = new PublicKey(resp.publicKey.toString());
+
+        output.innerText = `✅ Connected: ${publicKey.toBase58()}`;
+
+        // Fetch devnet balance
+        const connection = new Connection(clusterApiUrl("devnet"), "confirmed");
+        const balance = await connection.getBalance(publicKey);
+        output.innerText += `\n💰 Balance: ${balance / 1e9} SOL (devnet)`;
+
+      } catch (err) {
+        console.error(err);
+        output.innerText = "❌ Connection failed: " + err.message;
+      }
+    });
+
+    // --- Phaser Game Setup ---
+    const config = {
+      type: Phaser.AUTO,
+      width: 600,
+      height: 400,
+      backgroundColor: '#1d2b53',
+      scene: {
+        create: function () {
+          this.add.text(150, 180, "✅ Phaser Canvas Ready", {
+            font: "28px Arial",
+            fill: "#ffffff"
+          });
+        }
+      }
+    };
+
+    new Phaser.Game(config);
+  </script>
+</body>
+</html>
