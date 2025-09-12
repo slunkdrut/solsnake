@@ -2,6 +2,11 @@
 
 A complete Snake game built with Phaser.js that integrates with Solana blockchain for payments and leaderboards.
 
+![Game Preview](https://img.shields.io/badge/Game-Snake-green)
+![Phaser](https://img.shields.io/badge/Phaser-3.70.0-blue)
+![Solana](https://img.shields.io/badge/Solana-Blockchain-purple)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+
 ## 🎮 Game Features
 
 - **Classic Snake Gameplay** - Eat food, grow longer, avoid collisions
@@ -14,13 +19,30 @@ A complete Snake game built with Phaser.js that integrates with Solana blockchai
 
 ## 🚀 Quick Start
 
-The development server should already be running! If not, run:
+### Prerequisites
+- Node.js (v16 or higher)
+- npm or yarn
+- Phantom wallet browser extension (optional for demo)
 
-```bash
-npm run dev
-```
+### Installation
 
-Then open your browser and go to: **http://localhost:3000**
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/yourusername/solana-snake-game.git
+   cd solana-snake-game
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+3. **Start the development server:**
+   ```bash
+   npm run dev
+   ```
+
+4. **Open your browser and go to:** `http://localhost:3000`
 
 ## 🎯 How to Play
 
@@ -44,6 +66,7 @@ Then open your browser and go to: **http://localhost:3000**
 ## 📁 Project Structure
 
 ```
+solana-snake-game/
 ├── src/
 │   ├── main.js              # Entry point
 │   ├── game.js              # Complete game with all scenes
@@ -51,6 +74,7 @@ Then open your browser and go to: **http://localhost:3000**
 ├── index.html               # Game host page
 ├── package.json             # Dependencies and scripts
 ├── vite.config.js           # Build configuration
+├── .gitignore              # Git ignore file
 └── README.md               # This file
 ```
 
@@ -62,7 +86,16 @@ Then open your browser and go to: **http://localhost:3000**
 - **GameOverScene** - Game over screen with score
 - **LeaderboardScene** - Daily leaderboard (coming soon)
 
-## 🔧 Development Notes
+## 🔧 Development
+
+### Available Scripts
+
+- `npm run dev` - Start development server
+- `npm run build` - Build for production
+- `npm run preview` - Preview production build
+- `npm run serve` - Serve production build
+
+### Development Notes
 
 - Uses a **mock state client** for development (no real blockchain calls)
 - **Phantom wallet integration** is ready but uses mock data
@@ -77,6 +110,38 @@ npm run build
 
 The built files will be in the `dist` directory.
 
+## 🌐 Deployment
+
+The game can be deployed to any static hosting service:
+
+- **Vercel** - `vercel --prod`
+- **Netlify** - Connect your GitHub repository
+- **GitHub Pages** - Enable in repository settings
+- **Any static host** - Upload the `dist` folder
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📝 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- [Phaser.js](https://phaser.io/) - Game framework
+- [Vite](https://vitejs.dev/) - Build tool
+- [Solana](https://solana.com/) - Blockchain platform
+- [Phantom Wallet](https://phantom.app/) - Solana wallet
+
 ## 🎉 Enjoy the Game!
 
-The game is now ready to play! The development server should be running at http://localhost:3000. Have fun playing Snake and competing for the daily prizes!
+Have fun playing Snake and competing for the daily prizes! If you enjoy this game, please give it a ⭐ star!
+
+---
+
+**Made with ❤️ and Phaser.js**
