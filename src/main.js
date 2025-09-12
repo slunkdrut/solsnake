@@ -486,6 +486,8 @@ class MenuScene extends Phaser.Scene {
     this.paymentButton.setFillStyle(0xffff00);
     this.paymentButton.setStrokeStyle(3, 0x000000);
     this.paymentButtonText.setColor("#000000");
+    
+    // Check payment status when wallet connects
     this.checkDailyPayment();
   }
 
@@ -517,15 +519,47 @@ class MenuScene extends Phaser.Scene {
       const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
       const today = mountainTime.toISOString().split('T')[0];
       const paymentId = `${this.walletAddress}_${today}`;
+      
+      // Clear old payment cache if it's from a different day
+      const lastPaymentDate = localStorage.getItem('lastPaymentDate');
+      if (lastPaymentDate && lastPaymentDate !== today) {
+        // Clear all payment cache for old dates
+        const keys = Object.keys(localStorage);
+        keys.forEach(key => {
+          if (key.startsWith('payment_') && !key.includes(today)) {
+            localStorage.removeItem(key);
+          }
+        });
+        localStorage.setItem('lastPaymentDate', today);
+      }
+      
+      // First check localStorage for cached payment status
+      const cachedPayment = localStorage.getItem(`payment_${paymentId}`);
+      if (cachedPayment) {
+        const paymentData = JSON.parse(cachedPayment);
+        if (paymentData.confirmed && paymentData.date === today) {
+          this.hasPaid = true;
+          this.updatePaymentUI();
+          console.log("Payment found in cache for today");
+          return;
+        }
+      }
+      
+      // If not in cache, check the database
       const payment = await client.getEntity('daily_payments', paymentId);
-      if (payment) {
+      if (payment && payment.confirmed) {
         this.hasPaid = true;
         this.updatePaymentUI();
+        // Cache the payment status
+        localStorage.setItem(`payment_${paymentId}`, JSON.stringify(payment));
+        localStorage.setItem('lastPaymentDate', today);
+        console.log("Payment found in database for today");
       } else {
         this.hasPaid = false;
+        console.log("No payment found for today");
       }
     } catch (error) {
-      console.log("No payment found for today");
+      console.log("Error checking payment:", error);
       this.hasPaid = false;
     }
   }
@@ -625,8 +659,9 @@ class MenuScene extends Phaser.Scene {
       const now = new Date();
       const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
       const today = mountainTime.toISOString().split('T')[0];
+      const paymentId = `${this.walletAddress}_${today}`;
       const paymentData = {
-        id: `${this.walletAddress}_${today}`,
+        id: paymentId,
         wallet: this.walletAddress,
         amount: 0.01,
         date: today,
@@ -636,6 +671,10 @@ class MenuScene extends Phaser.Scene {
       };
       await client.createEntity('daily_payments', paymentData);
       console.log("Payment record saved");
+      
+      // Cache the payment status in localStorage
+      localStorage.setItem(`payment_${paymentId}`, JSON.stringify(paymentData));
+      
       this.hasPaid = true;
       this.updatePaymentUI();
       this.updateDailyPrize();
