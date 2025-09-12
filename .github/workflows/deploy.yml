@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 👇 Debug: list available vite config files
+      # 👇 Debug: list vite configs
       - name: List config files
         run: ls -l vite.config*
 
@@ -35,6 +35,12 @@ jobs:
         run: |
           echo ">>> Using vite.config.gh.js for GitHub Pages build"
           npm run build -- --config vite.config.gh.js
+
+      # 👇 Debug: show top lines of dist/index.html
+      - name: Show built index.html
+        run: |
+          echo ">>> First 30 lines of dist/index.html:"
+          head -n 30 dist/index.html
 
       - name: Upload artifact for deployment
         uses: actions/upload-pages-artifact@v3
