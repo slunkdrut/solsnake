@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phaser Test</title>
+  <style>
+    body { margin: 0; padding: 0; }
+    canvas { display: block; margin: auto; }
+  </style>
+  <!-- Load Phaser from CDN for a quick test -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.js"></script>
+</head>
+<body>
+  <script>
+    const config = {
+      type: Phaser.AUTO,
+      width: 800,
+      height: 600,
+      backgroundColor: '#1d2b53', // deep blue background
+      scene: {
+        create: function () {
+          this.add.text(300, 250, "✅ Phaser Works!", { font: "32px Arial", fill: "#ffffff" });
+        }
+      }
+    };
+
+    new Phaser.Game(config);
+  </script>
+</body>
+</html>
