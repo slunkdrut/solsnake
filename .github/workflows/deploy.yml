@@ -26,8 +26,15 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # 👇 Extra step to confirm vite config file exists
+      - name: List config files
+        run: ls -l vite.config*
+
+      # 👇 Build using GitHub Pages config + echo confirmation
       - name: Build Vite project (GitHub Pages config)
-        run: npm run build -- --config vite.config.gh.js
+        run: |
+          echo ">>> Using vite.config.gh.js for GitHub Pages build"
+          npm run build -- --config vite.config.gh.js
 
       - name: Upload artifact for deployment
         uses: actions/upload-pages-artifact@v3
@@ -37,10 +44,3 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
