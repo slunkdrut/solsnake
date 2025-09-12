@@ -3,7 +3,7 @@ name: Deploy Vite app to GitHub Pages
 on:
   push:
     branches:
-      - main   # deploy whenever code is pushed to main
+      - main
 
 permissions:
   contents: read
@@ -26,26 +26,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 👇 Debug: list vite configs
-      - name: List config files
-        run: ls -l vite.config*
+      - name: Build project
+        run: npm run build
 
-      # 👇 Build with GitHub Pages config
-      - name: Build Vite project (GitHub Pages config)
-        run: |
-          echo ">>> Using vite.config.gh.js for GitHub Pages build"
-          npm run build -- --config vite.config.gh.js
-
-      # 👇 Debug: show top lines of dist/index.html
-      - name: Show built index.html
-        run: |
-          echo ">>> First 30 lines of dist/index.html:"
-          head -n 30 dist/index.html
-
-      - name: Upload artifact for deployment
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./dist   # vite build output
+          path: ./dist
           
   deploy:
     needs: build
