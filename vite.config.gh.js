@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  base: '/solsnake/',   // 👈 GitHub Pages needs this
+  base: '/solsnake/',   // ✅ required for GitHub Pages
   build: {
     outDir: 'dist',
     assetsDir: 'assets'

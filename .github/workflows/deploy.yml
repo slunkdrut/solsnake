@@ -26,7 +26,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 👇 Build using GitHub-specific config
       - name: Build project (GitHub Pages config)
         run: npm run build -- --config vite.config.gh.js
 
@@ -39,7 +38,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment:
-      name: github-pages   # ✅ attaches live URL
+      name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
