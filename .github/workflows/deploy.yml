@@ -1,9 +1,9 @@
-name: Deploy to GitHub Pages
+name: Deploy Vite app to GitHub Pages
 
 on:
   push:
     branches:
-      - main   # runs whenever you push to main
+      - main   # deploy whenever code is pushed to main
 
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -26,10 +26,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build project
-        run: npm run build
+      - name: Build Vite project (GitHub Pages config)
+        run: npm run build -- --config vite.config.gh.js
 
-      - name: Upload GitHub Pages artifact
+      - name: Upload artifact for deployment
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist   # vite build output
