@@ -102,21 +102,6 @@ class MenuScene extends Phaser.Scene {
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
-    // Disconnect wallet button
-    this.disconnectWalletButton = this.add.rectangle(width / 2, isMobile ? height * 0.15 : height * 0.22, 90, 34, 0xff4444);
-    this.disconnectWalletButton.setStrokeStyle(2, 0xffffff);
-    this.disconnectWalletText = this.add.text(width / 2, isMobile ? height * 0.15 : height * 0.22, "DISCONNECT", {
-      fontSize: isMobile ? "10px" : "12px",
-      color: "#ffffff",
-      fontFamily: "monospace",
-      fontWeight: "bold"
-    }).setOrigin(0.5);
-    this.disconnectWalletButton.setInteractive();
-    this.disconnectWalletButton.on('pointerdown', () => {
-      this.disconnectWallet();
-    });
-    this.disconnectWalletButton.setVisible(false);
-
     // Daily prize text
     this.dailyPrizeText = this.add.text(width / 2, isMobile ? height * 0.19 : height * 0.24, "Daily Prize: 0.000 SOL", {
       fontSize: isMobile ? "14px" : "16px",
@@ -140,7 +125,11 @@ class MenuScene extends Phaser.Scene {
     }).setOrigin(0.5);
     this.connectWalletButton.setInteractive();
     this.connectWalletButton.on('pointerdown', () => {
-      this.connectPhantomWallet();
+      if (this.walletAddress) {
+        this.disconnectWallet();
+      } else {
+        this.connectPhantomWallet();
+      }
     });
 
     this.walletStatusText = this.add.text(width / 2, isMobile ? height * 0.31 : height * 0.36, isActualMobile && !isPhantomBrowser ? "For best experience, use Phantom browser" : "Connect wallet to continue", {
@@ -480,7 +469,6 @@ class MenuScene extends Phaser.Scene {
   updateWalletUI() {
     this.connectWalletText.setText("✓ WALLET CONNECTED");
     this.connectWalletButton.setFillStyle(0x00ff41);
-    this.disconnectWalletButton.setVisible(true);
     this.walletStatusText.setText(`${this.walletAddress.substring(0, 8)}...`);
     this.walletStatusText.setColor("#00ff41");
     this.paymentButton.setFillStyle(0xffff00);
@@ -495,7 +483,6 @@ class MenuScene extends Phaser.Scene {
     this.connectWalletText.setText("CONNECT PHANTOM WALLET");
     this.connectWalletButton.setFillStyle(0x8a2be2);
     this.connectWalletButton.setStrokeStyle(3, 0xffffff);
-    this.disconnectWalletButton.setVisible(false);
     this.walletStatusText.setText("Connect wallet to continue");
     this.walletStatusText.setColor("#888888");
     this.paymentStatusText.setText("💰 PAYMENT REQUIRED 💰");
