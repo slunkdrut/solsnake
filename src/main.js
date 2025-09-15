@@ -1,6 +1,57 @@
 import * as Phaser from "phaser";
 import { StateClient } from './mockStateClient.js';
 
+// Env-configured values with sensible fallbacks
+const RECEIVING_WALLET = (import.meta?.env?.VITE_RECEIVING_WALLET) || "5pLqMhYx9zmsdCAsRRcTMtEahFzGvQAfs2CzPfeTF14L";
+const RPC_URL = (import.meta?.env?.VITE_SOL_RPC) || "https://autumn-cool-research.solana-mainnet.quiknode.pro/d0e8d80ee0f8b5f35291b9261dab71e9afc9d607/";
+
+// Server-time helpers (fallback to client time if API unavailable)
+let TIME_CONFIG_CACHE = null;
+async function getTimeConfig() {
+  if (TIME_CONFIG_CACHE) return TIME_CONFIG_CACHE;
+  try {
+    const res = await fetch('/api/time', { cache: 'no-store' });
+    if (!res.ok) throw new Error('Time API not available');
+    TIME_CONFIG_CACHE = await res.json();
+  } catch (e) {
+    TIME_CONFIG_CACHE = null;
+  }
+  return TIME_CONFIG_CACHE;
+}
+
+function toMountainDateString(ms) {
+  const local = new Date(new Date(ms).toLocaleString("en-US", { timeZone: "America/Denver" }));
+  return local.toISOString().split('T')[0];
+}
+
+async function getPeriodData() {
+  const cfg = await getTimeConfig();
+  const nowMs = Date.now();
+  if (cfg && typeof cfg.epochMs === 'number' && typeof cfg.periodMs === 'number') {
+    const { epochMs, periodMs } = cfg;
+    const offset = nowMs - epochMs;
+    const index = Math.floor(offset / periodMs);
+    const startMs = epochMs + index * periodMs;
+    const endMs = startMs + periodMs;
+    const msLeft = Math.max(0, endMs - nowMs);
+    const todayKey = toMountainDateString(startMs);
+    const yesterdayKey = toMountainDateString(startMs - periodMs);
+    return { nowMs, epochMs, periodMs, index, startMs, endMs, msLeft, todayKey, yesterdayKey };
+  }
+  // Fallback to client-side Mountain Time midnight boundaries
+  const now = new Date();
+  const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
+  const tomorrow = new Date(mountainTime);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+  const msLeft = Math.max(0, tomorrow - mountainTime);
+  const todayKey = mountainTime.toISOString().split('T')[0];
+  const y = new Date(mountainTime);
+  y.setDate(y.getDate() - 1);
+  const yesterdayKey = y.toISOString().split('T')[0];
+  return { nowMs, epochMs: null, periodMs: 24 * 60 * 60 * 1000, index: null, startMs: null, endMs: null, msLeft, todayKey, yesterdayKey };
+}
+
 const client = new StateClient({
   baseURL: 'https://state.dev.fun',
   appId: '2fab5b437cf7dda4bc46'
@@ -83,27 +134,36 @@ class MenuScene extends Phaser.Scene {
   async create() {
     const { width, height } = this.scale;
     this.hasPaid = false;
-    this.receivingWallet = "5pLqMhYx9zmsdCAsRRcTMtEahFzGvQAfs2CzPfeTF14L";
+    this.receivingWallet = RECEIVING_WALLET;
     const isMobile = width < 800;
     const isActualMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const isPhantomBrowser = window.solana && window.solana.isPhantom;
 
-    // Use text fallback instead of external logo
-    this.add.text(width / 2, isMobile ? height * 0.05 : height * 0.1, "SOLSNAKE", {
-      fontSize: isMobile ? "20px" : "32px",
+    // Compact vertical layout using dynamic bounds to avoid overlap
+    // Increased gaps for clearer spacing
+    const gapSm = isMobile ? 14 : 18;
+    const gapMd = isMobile ? 22 : 28;
+    const gapLg = isMobile ? 28 : 36;
+    let y = isMobile ? Math.round(height * 0.08) : Math.round(height * 0.12);
+    const nextY = (display, gap) => Math.round(display.getBounds().bottom + gap);
+
+    // Title
+    const title = this.add.text(width / 2, y, "SOLSNAKE", {
+      fontSize: isMobile ? "22px" : "34px",
       color: "#00ff41",
       fontFamily: "monospace",
       fontWeight: "bold"
     }).setOrigin(0.5);
 
-    this.add.text(width / 2, isMobile ? height * 0.11 : height * 0.18, "🐍 The Most Degenerate Snake Game in Crypto! 🐍", {
-      fontSize: isMobile ? "12px" : "18px",
+    // Subtitle
+    const subtitle = this.add.text(width / 2, nextY(title, gapLg), "🐍 The Most Degenerate Snake Game in Crypto! 🐍", {
+      fontSize: isMobile ? "13px" : "18px",
       color: "#ffffff",
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
-    // Daily prize text
-    this.dailyPrizeText = this.add.text(width / 2, isMobile ? height * 0.19 : height * 0.24, "Daily Prize: 0.000 SOL", {
+    // Daily prize
+    this.dailyPrizeText = this.add.text(width / 2, nextY(subtitle, gapMd), "Daily Prize: 0.000 SOL", {
       fontSize: isMobile ? "14px" : "16px",
       color: "#ffff00",
       fontFamily: "monospace",
@@ -111,13 +171,14 @@ class MenuScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     // Connect wallet button
-    this.connectWalletButton = this.add.rectangle(width / 2, isMobile ? height * 0.25 : height * 0.30, isMobile ? 280 : 300, isMobile ? 40 : 50, 0x8a2be2);
+    y = nextY(this.dailyPrizeText, gapMd);
+    this.connectWalletButton = this.add.rectangle(width / 2, y, isMobile ? 280 : 300, isMobile ? 40 : 50, 0x8a2be2);
     this.connectWalletButton.setStrokeStyle(3, 0xffffff);
     let connectText = "CONNECT PHANTOM WALLET";
     if (isActualMobile) {
       connectText = isPhantomBrowser ? "CONNECT WALLET" : "OPEN IN PHANTOM BROWSER";
     }
-    this.connectWalletText = this.add.text(width / 2, isMobile ? height * 0.25 : height * 0.30, connectText, {
+    this.connectWalletText = this.add.text(width / 2, y, connectText, {
       fontSize: isMobile ? "12px" : "16px",
       color: "#ffffff",
       fontFamily: "monospace",
@@ -132,29 +193,30 @@ class MenuScene extends Phaser.Scene {
       }
     });
 
-    this.walletStatusText = this.add.text(width / 2, isMobile ? height * 0.31 : height * 0.36, isActualMobile && !isPhantomBrowser ? "For best experience, use Phantom browser" : "Connect wallet to continue", {
+    this.walletStatusText = this.add.text(width / 2, nextY(this.connectWalletButton, gapSm), isActualMobile && !isPhantomBrowser ? "For best experience, use Phantom browser" : "Connect wallet to continue", {
       fontSize: isMobile ? "10px" : "14px",
       color: "#888888",
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
     // Payment section
-    this.paymentStatusText = this.add.text(width / 2, isMobile ? height * 0.37 : height * 0.38, "💰 PAYMENT REQUIRED 💰", {
+    this.paymentStatusText = this.add.text(width / 2, nextY(this.walletStatusText, gapLg), "💰 PAYMENT REQUIRED 💰", {
       fontSize: isMobile ? "14px" : "20px",
       color: "#ffff00",
       fontFamily: "monospace",
       fontWeight: "bold"
     }).setOrigin(0.5);
 
-    this.add.text(width / 2, isMobile ? height * 0.41 : height * 0.42, "Cost: 0.01 SOL daily pass - play unlimited games", {
+    const costText = this.add.text(width / 2, nextY(this.paymentStatusText, gapSm), "Cost: 0.01 SOL daily pass - play unlimited games", {
       fontSize: isMobile ? "10px" : "14px",
       color: "#ffffff",
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
-    this.paymentButton = this.add.rectangle(width / 2, isMobile ? height * 0.46 : height * 0.46, isMobile ? 220 : 250, isMobile ? 40 : 50, 0x666666);
+    y = nextY(costText, gapMd);
+    this.paymentButton = this.add.rectangle(width / 2, y, isMobile ? 220 : 250, isMobile ? 40 : 50, 0x666666);
     this.paymentButton.setStrokeStyle(3, 0x888888);
-    this.paymentButtonText = this.add.text(width / 2, isMobile ? height * 0.46 : height * 0.46, "PAY 0.01 SOL", {
+    this.paymentButtonText = this.add.text(width / 2, y, "PAY 0.01 SOL", {
       fontSize: isMobile ? "13px" : "18px",
       color: "#888888",
       fontFamily: "monospace",
@@ -166,15 +228,15 @@ class MenuScene extends Phaser.Scene {
     });
 
     // X username input
-    this.add.text(width / 2, isMobile ? height * 0.53 : height * 0.52, "X.com username (optional):", {
+    const xLabel = this.add.text(width / 2, nextY(this.paymentButton, gapLg), "X.com username (optional):", {
       fontSize: isMobile ? "12px" : "16px",
       color: "#ffffff",
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
-    const xInputBg = this.add.rectangle(width / 2, isMobile ? height * 0.57 : height * 0.56, isMobile ? 260 : 300, isMobile ? 30 : 40, 0x333333);
+    const xInputBg = this.add.rectangle(width / 2, nextY(xLabel, gapMd), isMobile ? 260 : 300, isMobile ? 30 : 40, 0x333333);
     xInputBg.setStrokeStyle(2, 0x1da1f2);
-    this.xText = this.add.text(width / 2, isMobile ? height * 0.57 : height * 0.56, "Click to enter X username", {
+    this.xText = this.add.text(width / 2, xInputBg.y, "Click to enter X username", {
       fontSize: isMobile ? "11px" : "14px",
       color: "#888888",
       fontFamily: "monospace"
@@ -190,9 +252,10 @@ class MenuScene extends Phaser.Scene {
     });
 
     // Play button
-    this.playButton = this.add.rectangle(width / 2, isMobile ? height * 0.64 : height * 0.62, isMobile ? 180 : 200, isMobile ? 40 : 50, 0x666666);
+    y = nextY(xInputBg, gapLg);
+    this.playButton = this.add.rectangle(width / 2, y, isMobile ? 180 : 200, isMobile ? 40 : 50, 0x666666);
     this.playButton.setStrokeStyle(3, 0x888888);
-    this.playButtonText = this.add.text(width / 2, isMobile ? height * 0.64 : height * 0.62, "PLAY", {
+    this.playButtonText = this.add.text(width / 2, y, "PLAY", {
       fontSize: isMobile ? "16px" : "24px",
       color: "#888888",
       fontFamily: "monospace",
@@ -216,9 +279,10 @@ class MenuScene extends Phaser.Scene {
     });
 
     // Leaderboard button
-    const leaderboardButton = this.add.rectangle(width / 2, isMobile ? height * 0.71 : height * 0.68, isMobile ? 180 : 200, isMobile ? 34 : 40, 0x333333);
+    y = nextY(this.playButton, gapMd);
+    const leaderboardButton = this.add.rectangle(width / 2, y, isMobile ? 180 : 200, isMobile ? 34 : 40, 0x333333);
     leaderboardButton.setStrokeStyle(2, 0x00ff41);
-    this.add.text(width / 2, isMobile ? height * 0.71 : height * 0.68, "LEADERBOARD", {
+    this.leaderboardText = this.add.text(width / 2, y, "LEADERBOARD", {
       fontSize: isMobile ? "13px" : "16px",
       color: "#00ff41",
       fontFamily: "monospace"
@@ -228,18 +292,25 @@ class MenuScene extends Phaser.Scene {
       this.scene.start("LeaderboardScene");
     });
 
-    this.add.text(width / 2, isMobile ? this.scale.height * 0.76 : this.scale.height * 0.74, "(payouts may take from 1-24 hours after win)", {
-      fontSize: isMobile ? "9px" : "12px",
-      color: "#888888",
-      fontFamily: "monospace"
-    }).setOrigin(0.5);
+    // Place daily timer under leaderboard button with generous gap
+    this.timerAnchorY = nextY(leaderboardButton, gapLg);
 
-    this.add.text(width / 2, isMobile ? this.scale.height * 0.81 : this.scale.height * 0.78, "The player with the highest score at the end\nof the Daily Reset wins the Daily Pot!", {
-      fontSize: isMobile ? "11px" : "16px",
-      color: "#ffff00",
-      fontFamily: "monospace",
-      fontWeight: "bold"
-    }).setOrigin(0.5);
+    // Move X username, Play, Leaderboard cluster up slightly
+    const lowerPull = isMobile ? 16 : 20;
+    [xLabel, xInputBg, this.xText, this.playButton, this.playButtonText, leaderboardButton, this.leaderboardText]
+      .forEach(el => { if (el && typeof el.y === 'number') el.y -= lowerPull; });
+    this.timerAnchorY -= lowerPull;
+
+    // Pull the section above the X username closer to the title
+    // (do not move the X username box, Play, Leaderboard, or timer)
+    const pullUp = isMobile ? 24 : 32;
+    [subtitle, this.dailyPrizeText, this.connectWalletButton, this.connectWalletText,
+     this.walletStatusText, this.paymentStatusText, costText,
+     this.paymentButton, this.paymentButtonText].forEach(el => {
+      if (el && typeof el.y === 'number') el.y -= pullUp;
+    });
+
+    // Removed disclaimer and description text per request
 
     this.updateDailyTimer();
     if (!isActualMobile) {
@@ -299,10 +370,8 @@ class MenuScene extends Phaser.Scene {
 
   async updateDailyPrize() {
     try {
-      const now = new Date();
-      const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-      const today = mountainTime.toISOString().split('T')[0];
-      const todayPayments = await client.getEntities('daily_payments', { date: today });
+      const { todayKey } = await getPeriodData();
+      const todayPayments = await client.getEntities('daily_payments', { date: todayKey });
       const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
       const dailyPrize = totalCollected * 0.9;
       if (this.dailyPrizeText && !this.dailyPrizeText.scene) {
@@ -502,29 +571,27 @@ class MenuScene extends Phaser.Scene {
 
   async checkDailyPayment() {
     try {
-      const now = new Date();
-      const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-      const today = mountainTime.toISOString().split('T')[0];
-      const paymentId = `${this.walletAddress}_${today}`;
+      const { todayKey } = await getPeriodData();
+      const paymentId = `${this.walletAddress}_${todayKey}`;
       
       // Clear old payment cache if it's from a different day
       const lastPaymentDate = localStorage.getItem('lastPaymentDate');
-      if (lastPaymentDate && lastPaymentDate !== today) {
+      if (lastPaymentDate && lastPaymentDate !== todayKey) {
         // Clear all payment cache for old dates
         const keys = Object.keys(localStorage);
         keys.forEach(key => {
-          if (key.startsWith('payment_') && !key.includes(today)) {
+          if (key.startsWith('payment_') && !key.includes(todayKey)) {
             localStorage.removeItem(key);
           }
         });
-        localStorage.setItem('lastPaymentDate', today);
+        localStorage.setItem('lastPaymentDate', todayKey);
       }
       
       // First check localStorage for cached payment status
       const cachedPayment = localStorage.getItem(`payment_${paymentId}`);
       if (cachedPayment) {
         const paymentData = JSON.parse(cachedPayment);
-        if (paymentData.confirmed && paymentData.date === today) {
+        if (paymentData.confirmed && paymentData.date === todayKey) {
           this.hasPaid = true;
           this.updatePaymentUI();
           console.log("Payment found in cache for today");
@@ -566,7 +633,10 @@ class MenuScene extends Phaser.Scene {
     }
     const isMobile = this.scale.width < 800;
     const { width } = this.scale;
-    this.goodLuckText = this.add.text(width / 2, isMobile ? this.scale.height * 0.46 : this.scale.height * 0.465, "GOOD LUCK!", {
+    // Position GOOD LUCK just above the X username label
+    // Slightly closer for a tighter grouping under payment
+    const belowPayment = (this.paymentButton?.y || 0) + (isMobile ? 44 : 52);
+    this.goodLuckText = this.add.text(width / 2, belowPayment, "GOOD LUCK!", {
       fontSize: isMobile ? "11px" : "14px",
       color: "#ffffff",
       fontFamily: "monospace",
@@ -609,7 +679,7 @@ class MenuScene extends Phaser.Scene {
       console.log("From wallet:", this.walletAddress);
       console.log("To wallet:", this.receivingWallet);
       console.log("Amount: 0.01 SOL");
-      const connection = new window.solanaWeb3.Connection('https://autumn-cool-research.solana-mainnet.quiknode.pro/d0e8d80ee0f8b5f35291b9261dab71e9afc9d607/', 'confirmed');
+      const connection = new window.solanaWeb3.Connection(RPC_URL, 'confirmed');
       const fromPubkey = new window.solanaWeb3.PublicKey(this.walletAddress);
       const toPubkey = new window.solanaWeb3.PublicKey(this.receivingWallet);
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
@@ -643,15 +713,13 @@ class MenuScene extends Phaser.Scene {
         throw new Error(`Transaction failed: ${confirmation.value.err}`);
       }
       console.log("Transaction confirmed");
-      const now = new Date();
-      const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-      const today = mountainTime.toISOString().split('T')[0];
-      const paymentId = `${this.walletAddress}_${today}`;
+      const { todayKey } = await getPeriodData();
+      const paymentId = `${this.walletAddress}_${todayKey}`;
       const paymentData = {
         id: paymentId,
         wallet: this.walletAddress,
         amount: 0.01,
-        date: today,
+        date: todayKey,
         signature: signedTransaction.signature,
         timestamp: Date.now(),
         confirmed: true
@@ -691,47 +759,41 @@ class MenuScene extends Phaser.Scene {
   }
 
   updateDailyTimer() {
-    const now = new Date();
-    const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-    const tomorrow = new Date(mountainTime);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
-    const timeLeft = tomorrow - mountainTime;
-    const hours = Math.floor(timeLeft / (1000 * 60 * 60));
-    const minutes = Math.floor(timeLeft % (1000 * 60 * 60) / (1000 * 60));
-    const seconds = Math.floor(timeLeft % (1000 * 60) / 1000);
-    if (mountainTime.getHours() === 0 && mountainTime.getMinutes() === 0 && mountainTime.getSeconds() < 2) {
-      this.time.delayedCall(100, () => {
-        this.handleDailyReset();
-      });
-    }
-    if (this.timerText) {
-      this.timerText.destroy();
-    }
-    const isMobile = this.scale.width < 800;
-    this.timerText = this.add.text(this.scale.width / 2, isMobile ? this.scale.height * 0.86 : this.scale.height * 0.84, `Daily Reset: ${hours}h ${minutes}m ${seconds}s`, {
-      fontSize: isMobile ? "12px" : "14px",
-      color: "#ffff00",
-      fontFamily: "monospace"
-    }).setOrigin(0.5);
-    this.time.delayedCall(1000, () => this.updateDailyTimer());
+    (async () => {
+      const { msLeft } = await getPeriodData();
+      const isMobile = this.scale.width < 800;
+      const hours = Math.floor(msLeft / (1000 * 60 * 60));
+      const minutes = Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((msLeft % (1000 * 60)) / 1000);
+      if (msLeft <= 2000) {
+        this.time.delayedCall(100, () => {
+          this.handleDailyReset();
+        });
+      }
+      if (this.timerText) {
+        this.timerText.destroy();
+      }
+      const y = this.timerAnchorY || (this.scale.height - (isMobile ? 60 : 70));
+      this.timerText = this.add.text(this.scale.width / 2, y, `Daily Reset: ${hours}h ${minutes}m ${seconds}s`, {
+        fontSize: isMobile ? "12px" : "14px",
+        color: "#ffff00",
+        fontFamily: "monospace"
+      }).setOrigin(0.5);
+      this.time.delayedCall(1000, () => this.updateDailyTimer());
+    })();
   }
 
   async handleDailyReset() {
     try {
-      const now = new Date();
-      const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-      const yesterday = new Date(mountainTime);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toISOString().split('T')[0];
-      const existingWinner = await client.getEntity('daily_winners', `winner_${yesterdayStr}`);
-      const yesterdayScores = await client.getEntities('players', { date: yesterdayStr });
+      const { yesterdayKey } = await getPeriodData();
+      const existingWinner = await client.getEntity('daily_winners', `winner_${yesterdayKey}`);
+      const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
       if (yesterdayScores.length > 0) {
         yesterdayScores.sort((a, b) => b.score - a.score);
         const actualWinner = yesterdayScores[0];
         let dailyPot = 0;
         try {
-          const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayStr });
+          const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
           const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + payment.amount, 0);
           dailyPot = totalCollected * 0.9;
         } catch (error) {
@@ -741,17 +803,17 @@ class MenuScene extends Phaser.Scene {
           wallet: actualWinner.wallet || "Unknown",
           xUsername: actualWinner.xUsername || "",
           score: actualWinner.score || 0,
-          date: yesterdayStr,
+          date: yesterdayKey,
           timestamp: Date.now(),
           dailyPot: dailyPot || 0
         };
         if (existingWinner) {
-          console.log(`Updating past winner for ${yesterdayStr}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
-          await client.updateEntity('daily_winners', `winner_${yesterdayStr}`, winnerData);
+          console.log(`Updating past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
+          await client.updateEntity('daily_winners', `winner_${yesterdayKey}`, winnerData);
         } else {
-          console.log(`Creating new past winner for ${yesterdayStr}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
+          console.log(`Creating new past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
           await client.createEntity('daily_winners', {
-            id: `winner_${yesterdayStr}`,
+            id: `winner_${yesterdayKey}`,
             ...winnerData
           });
         }
@@ -842,6 +904,24 @@ class GameScene extends Phaser.Scene {
     }
 
     this.enableMobileAudio();
+
+    // Initialize sprite pools
+    this.snakeSprites = [];
+    for (let i = 0; i < this.snake.length; i++) {
+      const segment = this.snake[i];
+      const sprite = this.add.image(
+        this.offsetX + segment.x * this.gridSize + this.gridSize / 2,
+        this.offsetY + segment.y * this.gridSize + this.gridSize / 2,
+        "snakeBody"
+      );
+      if (i === 0) sprite.setTint(0x008000);
+      this.snakeSprites.push(sprite);
+    }
+    this.foodSprite = this.add.image(
+      this.offsetX + this.food.x * this.gridSize + this.gridSize / 2,
+      this.offsetY + this.food.y * this.gridSize + this.gridSize / 2,
+      "food"
+    );
   }
 
   setupMobileControls() {
@@ -938,9 +1018,21 @@ class GameScene extends Phaser.Scene {
       this.scoreText.setText(`Score: ${this.score}`);
       this.food = this.generateFood();
       this.createFoodParticles();
+      // Create a new sprite for the new head if needed
+      if (this.snakeSprites.length < this.snake.length) {
+        const newSprite = this.add.image(0, 0, "snakeBody");
+        this.snakeSprites.unshift(newSprite);
+      } else {
+        // Maintain array alignment when unshifting
+        const recycled = this.snakeSprites.pop();
+        this.snakeSprites.unshift(recycled);
+      }
     } else {
       this.snake.unshift(head);
       this.snake.pop();
+      // Reuse tail sprite as new head sprite
+      const tailSprite = this.snakeSprites.pop();
+      this.snakeSprites.unshift(tailSprite);
     }
 
     this.renderGame();
@@ -962,30 +1054,31 @@ class GameScene extends Phaser.Scene {
   }
 
   renderGame() {
-    if (this.snakeSprites) {
-      this.snakeSprites.forEach(sprite => sprite.destroy());
-    }
-    if (this.foodSprite) {
-      this.foodSprite.destroy();
-    }
-
-    this.snakeSprites = [];
-    this.snake.forEach((segment, index) => {
-      const sprite = this.add.image(
-        this.offsetX + segment.x * this.gridSize + this.gridSize / 2,
-        this.offsetY + segment.y * this.gridSize + this.gridSize / 2,
-        "snakeBody"
-      );
-      if (index === 0) {
-        sprite.setTint(0x008000);
+    // Update snake sprites positions instead of recreating each frame
+    for (let i = 0; i < this.snake.length; i++) {
+      const segment = this.snake[i];
+      let sprite = this.snakeSprites[i];
+      if (!sprite) {
+        sprite = this.add.image(0, 0, "snakeBody");
+        this.snakeSprites[i] = sprite;
       }
-      this.snakeSprites.push(sprite);
-    });
-
-    this.foodSprite = this.add.image(
+      sprite.setPosition(
+        this.offsetX + segment.x * this.gridSize + this.gridSize / 2,
+        this.offsetY + segment.y * this.gridSize + this.gridSize / 2
+      );
+      if (i === 0) {
+        sprite.setTint(0x008000);
+      } else {
+        sprite.clearTint();
+      }
+    }
+    // Update food sprite position
+    if (!this.foodSprite) {
+      this.foodSprite = this.add.image(0, 0, "food");
+    }
+    this.foodSprite.setPosition(
       this.offsetX + this.food.x * this.gridSize + this.gridSize / 2,
-      this.offsetY + this.food.y * this.gridSize + this.gridSize / 2,
-      "food"
+      this.offsetY + this.food.y * this.gridSize + this.gridSize / 2
     );
   }
 
@@ -1023,8 +1116,7 @@ class GameScene extends Phaser.Scene {
   async gameOver() {
     this.gameTimer.destroy();
     try {
-      const now = new Date();
-      const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
+      const { todayKey } = await getPeriodData();
       const uniqueId = `${this.playerWallet}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const playerData = {
         id: uniqueId,
@@ -1032,7 +1124,7 @@ class GameScene extends Phaser.Scene {
         xUsername: this.playerX || "",
         score: this.score,
         timestamp: Date.now(),
-        date: mountainTime.toISOString().split('T')[0]
+        date: todayKey
       };
       await client.createEntity('players', playerData);
     } catch (error) {
@@ -1260,15 +1352,13 @@ class LeaderboardScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     try {
-      const now = new Date();
-      const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-      const today = mountainTime.toISOString().split('T')[0];
-      const todayPayments = await client.getEntities('daily_payments', { date: today });
+      const { todayKey } = await getPeriodData();
+      const todayPayments = await client.getEntities('daily_payments', { date: todayKey });
       const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
       const dailyPot = totalCollected * 0.9;
-      const todayScores = await client.getEntities('players', { date: today });
+      const todayScores = await client.getEntities('players', { date: todayKey });
       todayScores.sort((a, b) => b.score - a.score);
-      const top10 = todayScores.slice(0, 10);
+      const top = todayScores.slice(0, 5);
 
       this.add.text(width / 2, 105, `💰 Daily Pot: ${dailyPot.toFixed(3)} SOL 💰`, {
         fontSize: "20px",
@@ -1277,7 +1367,7 @@ class LeaderboardScene extends Phaser.Scene {
         fontWeight: "bold"
       }).setOrigin(0.5);
 
-      if (top10.length === 0) {
+      if (top.length === 0) {
         this.add.text(width / 2, height / 2, "No scores yet today!\nBe the first to play!", {
           fontSize: "24px",
           color: "#ffffff",
@@ -1285,7 +1375,7 @@ class LeaderboardScene extends Phaser.Scene {
           align: "center"
         }).setOrigin(0.5);
       } else {
-        top10.forEach((player, index) => {
+        top.forEach((player, index) => {
           const y = 160 + index * 35;
           const rank = index + 1;
           const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}.`;
@@ -1314,18 +1404,18 @@ class LeaderboardScene extends Phaser.Scene {
           });
         });
 
-        if (top10[0]) {
-          this.add.text(width / 2, height - 170, `🎯 Current Leader: ${top10[0].wallet.substring(0, 12)}...`, {
+        if (top[0]) {
+          this.add.text(width / 2, height - 220, `🎯 Current Leader: ${top[0].wallet.substring(0, 12)}...`, {
             fontSize: "18px",
             color: "#00ff41",
             fontFamily: "monospace"
           }).setOrigin(0.5);
-          this.add.text(width / 2, height - 145, `Score to Beat: ${top10[0].score}`, {
+          this.add.text(width / 2, height - 195, `Score to Beat: ${top[0].score}`, {
             fontSize: "16px",
             color: "#ffffff",
             fontFamily: "monospace"
           }).setOrigin(0.5);
-          this.add.text(width / 2, height - 120, `Winner takes ${dailyPot.toFixed(3)} SOL!`, {
+          this.add.text(width / 2, height - 170, `Winner takes ${dailyPot.toFixed(3)} SOL!`, {
             fontSize: "16px",
             color: "#ffff00",
             fontFamily: "monospace",
@@ -1438,49 +1528,44 @@ class LeaderboardScene extends Phaser.Scene {
   }
 
   updateDailyTimer() {
-    const now = new Date();
-    const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-    const tomorrow = new Date(mountainTime);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
-    const timeLeft = tomorrow - mountainTime;
-    const hours = Math.floor(timeLeft / (1000 * 60 * 60));
-    const minutes = Math.floor(timeLeft % (1000 * 60 * 60) / (1000 * 60));
-    const seconds = Math.floor(timeLeft % (1000 * 60) / 1000);
+    (async () => {
+      const { msLeft } = await getPeriodData();
+      const hours = Math.floor(msLeft / (1000 * 60 * 60));
+      const minutes = Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((msLeft % (1000 * 60)) / 1000);
 
-    if (mountainTime.getHours() === 0 && mountainTime.getMinutes() === 0 && mountainTime.getSeconds() < 2) {
-      this.handleDailyReset();
-    }
+      if (msLeft <= 2000) {
+        this.handleDailyReset();
+      }
 
-    if (this.timerText) {
-      this.timerText.destroy();
-    }
+      if (this.timerText) {
+        this.timerText.destroy();
+      }
 
-    this.timerText = this.add.text(this.scale.width / 2, this.scale.height - 30, `Daily Reset: ${hours}h ${minutes}m ${seconds}s`, {
-      fontSize: "14px",
-      color: "#ffff00",
-      fontFamily: "monospace"
-    }).setOrigin(0.5);
+      const isMobile = this.scale.width < 800;
+      const bottomMargin = isMobile ? 20 : 24; // keep timer below back button
+      this.timerText = this.add.text(this.scale.width / 2, this.scale.height - bottomMargin, `Daily Reset: ${hours}h ${minutes}m ${seconds}s`, {
+        fontSize: "14px",
+        color: "#ffff00",
+        fontFamily: "monospace"
+      }).setOrigin(0.5);
 
-    this.time.delayedCall(1000, () => this.updateDailyTimer());
+      this.time.delayedCall(1000, () => this.updateDailyTimer());
+    })();
   }
 
   async handleDailyReset() {
     try {
-      const now = new Date();
-      const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-      const yesterday = new Date(mountainTime);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toISOString().split('T')[0];
-      const existingWinner = await client.getEntity('daily_winners', `winner_${yesterdayStr}`);
-      const yesterdayScores = await client.getEntities('players', { date: yesterdayStr });
+      const { yesterdayKey } = await getPeriodData();
+      const existingWinner = await client.getEntity('daily_winners', `winner_${yesterdayKey}`);
+      const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
 
       if (yesterdayScores.length > 0) {
         yesterdayScores.sort((a, b) => b.score - a.score);
         const actualWinner = yesterdayScores[0];
         let dailyPot = 0;
         try {
-          const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayStr });
+          const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
           const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + payment.amount, 0);
           dailyPot = totalCollected * 0.9;
         } catch (error) {
@@ -1491,18 +1576,18 @@ class LeaderboardScene extends Phaser.Scene {
           wallet: actualWinner.wallet || "Unknown",
           xUsername: actualWinner.xUsername || "",
           score: actualWinner.score || 0,
-          date: yesterdayStr,
+          date: yesterdayKey,
           timestamp: Date.now(),
           dailyPot: dailyPot || 0
         };
 
         if (existingWinner) {
-          console.log(`Updating past winner for ${yesterdayStr}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
-          await client.updateEntity('daily_winners', `winner_${yesterdayStr}`, winnerData);
+          console.log(`Updating past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
+          await client.updateEntity('daily_winners', `winner_${yesterdayKey}`, winnerData);
         } else {
-          console.log(`Creating new past winner for ${yesterdayStr}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
+          console.log(`Creating new past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
           await client.createEntity('daily_winners', {
-            id: `winner_${yesterdayStr}`,
+            id: `winner_${yesterdayKey}`,
             ...winnerData
           });
         }

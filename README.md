@@ -44,6 +44,20 @@ A complete Snake game built with Phaser.js that integrates with Solana blockchai
 
 4. **Open your browser and go to:** `http://localhost:3000`
 
+## ⚙️ Configuration
+
+- Create a `.env` file (see `.env.example`) to configure:
+  - `VITE_RECEIVING_WALLET` – wallet address that receives payments
+  - `VITE_SOL_RPC` – Solana RPC URL used for payment confirmations
+
+Example:
+```
+VITE_RECEIVING_WALLET=YourWalletAddressHere
+VITE_SOL_RPC=https://api.mainnet-beta.solana.com
+```
+
+Server time for daily reset and prizes comes from `GET /api/time` when deployed (Vercel). During local dev, if the API is unavailable, the game falls back to client Mountain Time (America/Denver) for daily boundaries.
+
 ## 🎯 How to Play
 
 1. **Connect Wallet** - Click "CONNECT PHANTOM WALLET" (or install Phantom extension)

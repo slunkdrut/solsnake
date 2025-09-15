@@ -2,15 +2,25 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>SolSnake Deploy Test</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; font-family: monospace; }
+    .center-screen { min-height: 100dvh; display: grid; place-items: center; padding: 2rem; background: #0a0a0a; }
+    .stage { width: min(95vmin, 1100px); aspect-ratio: 16/9; background: #151823; border-radius: 16px; overflow: hidden; display: grid; place-items: center; }
+  </style>
 </head>
-<body>
-  <h1 style="text-align:center; margin-top:50px;">
-    ✅ GitHub Pages is working!
-  </h1>
-  <p style="text-align:center;">
-    If you see this page at <code>/test.html</code>, your deployment is successful 🎉
-  </p>
+<body class="center-screen">
+  <main class="stage">
+    <div>
+      <h1 style="text-align:center; margin:0 0 8px 0;">✅ GitHub Pages is working!</h1>
+      <p style="text-align:center; margin:0;">
+        If you see this page at <code>/test.html</code>, your deployment is successful 🎉
+      </p>
+    </div>
+  </main>
 </body>
 </html>
