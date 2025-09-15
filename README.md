@@ -159,3 +159,11 @@ Have fun playing Snake and competing for the daily prizes! If you enjoy this gam
 ---
 
 **Made with ❤️ and Phaser.js**
+## 💾 Local Persistence
+
+- Game data persists across refresh via `localStorage` using the mock `StateClient`.
+- Two JSON stubs are included for future backend persistence or manual export:
+  - `public/data/daily_scores.json` — structure mirror for daily scores
+  - `public/data/past_winners.json` — structure mirror for past winners
+
+Note: Static files are not writable from the browser; the app saves to `localStorage` in development. A real backend can sync these files or store to a database.

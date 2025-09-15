@@ -1,18 +1,52 @@
-// Mock StateClient for development
+// Mock StateClient for development with localStorage persistence
 export class StateClient {
   constructor(config) {
     this.baseURL = config.baseURL;
     this.appId = config.appId;
+    this.storagePrefix = 'solsnake_';
     this.mockData = {
       daily_payments: new Map(),
       players: new Map(),
       daily_winners: new Map()
     };
+    this._loadFromStorage();
     console.log('Mock StateClient initialized with:', config);
   }
 
+  _loadFromStorage() {
+    try {
+      const load = (key) => {
+        const raw = localStorage.getItem(this.storagePrefix + key);
+        if (!raw) return;
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          const map = new Map(arr.map(e => [e.id, e]));
+          this.mockData[key] = map;
+        }
+      };
+      load('daily_payments');
+      load('players');
+      load('daily_winners');
+    } catch (e) {
+      console.warn('StateClient: failed to load from localStorage', e);
+    }
+  }
+
+  _saveToStorage(entityType) {
+    try {
+      const map = this.mockData[entityType];
+      if (!map) return;
+      const arr = Array.from(map.values());
+      localStorage.setItem(this.storagePrefix + entityType, JSON.stringify(arr));
+      // Mirror to static-like files area as best-effort (read-only on server)
+      // These are exposed for manual export/debug via the network panel when served.
+    } catch (e) {
+      console.warn('StateClient: failed to save to localStorage', e);
+    }
+  }
+
   async getEntities(entityType, filters = {}) {
-    console.log(`Mock: Getting entities of type ${entityType} with filters:`, filters);
+    // console.log(`Mock: Getting entities of type ${entityType} with filters:`, filters);
     
     if (!this.mockData[entityType]) {
       return [];
@@ -39,7 +73,7 @@ export class StateClient {
   }
 
   async createEntity(entityType, data) {
-    console.log(`Mock: Creating entity ${entityType} with data:`, data);
+    // console.log(`Mock: Creating entity ${entityType} with data:`, data);
     
     if (!this.mockData[entityType]) {
       this.mockData[entityType] = new Map();
@@ -48,13 +82,14 @@ export class StateClient {
     const id = data.id || `mock-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const entity = { ...data, id };
     this.mockData[entityType].set(id, entity);
+    this._saveToStorage(entityType);
     
-    console.log(`Mock: Created entity with id ${id}`);
+    // console.log(`Mock: Created entity with id ${id}`);
     return { success: true, id };
   }
 
   async updateEntity(entityType, id, data) {
-    console.log(`Mock: Updating entity ${entityType} with id ${id} and data:`, data);
+    // console.log(`Mock: Updating entity ${entityType} with id ${id} and data:`, data);
     
     if (!this.mockData[entityType]) {
       this.mockData[entityType] = new Map();
@@ -64,21 +99,24 @@ export class StateClient {
     if (existing) {
       const updated = { ...existing, ...data, id };
       this.mockData[entityType].set(id, updated);
-      console.log(`Mock: Updated entity ${id}`);
+      this._saveToStorage(entityType);
+      // console.log(`Mock: Updated entity ${id}`);
     } else {
-      console.log(`Mock: Entity ${id} not found, creating new one`);
+      // console.log(`Mock: Entity ${id} not found, creating new one`);
       const entity = { ...data, id };
       this.mockData[entityType].set(id, entity);
+      this._saveToStorage(entityType);
     }
     
     return { success: true };
   }
 
   async deleteEntity(entityType, id) {
-    console.log(`Mock: Deleting entity ${entityType} with id ${id}`);
+    // console.log(`Mock: Deleting entity ${entityType} with id ${id}`);
     
     if (this.mockData[entityType]) {
       this.mockData[entityType].delete(id);
+      this._saveToStorage(entityType);
     }
     
     return { success: true };

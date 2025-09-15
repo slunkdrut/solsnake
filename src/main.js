@@ -1357,6 +1357,7 @@ class LeaderboardScene extends Phaser.Scene {
       const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
       const dailyPot = totalCollected * 0.9;
       const todayScores = await client.getEntities('players', { date: todayKey });
+      // Show raw top scores (duplicates per wallet allowed)
       todayScores.sort((a, b) => b.score - a.score);
       const top = todayScores.slice(0, 5);
 
