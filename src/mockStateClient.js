@@ -10,7 +10,9 @@ export class StateClient {
       daily_winners: new Map()
     };
     this._loadFromStorage();
-    console.log('Mock StateClient initialized with:', config);
+    // Optional server persistence via Vercel KV API (/api/state)
+    this.useApi = (typeof window !== 'undefined') && (import.meta?.env?.VITE_USE_API_STORAGE === '1');
+    console.log('Mock StateClient initialized with:', { ...config, useApi: this.useApi });
   }
 
   _loadFromStorage() {
@@ -46,79 +48,108 @@ export class StateClient {
   }
 
   async getEntities(entityType, filters = {}) {
-    // console.log(`Mock: Getting entities of type ${entityType} with filters:`, filters);
-    
-    if (!this.mockData[entityType]) {
-      return [];
+    // Try server API if configured
+    if (this.useApi) {
+      try {
+        const params = new URLSearchParams({ type: entityType });
+        if (filters.date) params.set('date', filters.date);
+        const res = await fetch(`/api/state?${params.toString()}`, { cache: 'no-store' });
+        if (res.ok) return await res.json();
+      } catch (_) {}
     }
-
+    if (!this.mockData[entityType]) return [];
     let entities = Array.from(this.mockData[entityType].values());
-    
-    // Apply filters
-    if (filters.date) {
-      entities = entities.filter(entity => entity.date === filters.date);
-    }
-    
+    if (filters.date) entities = entities.filter(e => e.date === filters.date);
     return entities;
   }
 
   async getEntity(entityType, id) {
-    console.log(`Mock: Getting entity ${entityType} with id ${id}`);
-    
-    if (!this.mockData[entityType]) {
-      return null;
+    if (this.useApi) {
+      try {
+        const params = new URLSearchParams({ type: entityType, id });
+        const res = await fetch(`/api/state?${params.toString()}`, { cache: 'no-store' });
+        if (res.ok) return await res.json();
+      } catch (_) {}
     }
-    
+    if (!this.mockData[entityType]) return null;
     return this.mockData[entityType].get(id) || null;
   }
 
   async createEntity(entityType, data) {
-    // console.log(`Mock: Creating entity ${entityType} with data:`, data);
-    
-    if (!this.mockData[entityType]) {
-      this.mockData[entityType] = new Map();
+    if (this.useApi) {
+      try {
+        const res = await fetch(`/api/state?type=${encodeURIComponent(entityType)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          const out = await res.json();
+          // mirror locally for fast reads
+          const id = out.id;
+          if (!this.mockData[entityType]) this.mockData[entityType] = new Map();
+          this.mockData[entityType].set(id, { ...data, id });
+          this._saveToStorage(entityType);
+          return out;
+        }
+      } catch (_) {}
     }
-    
+    if (!this.mockData[entityType]) this.mockData[entityType] = new Map();
     const id = data.id || `mock-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const entity = { ...data, id };
     this.mockData[entityType].set(id, entity);
     this._saveToStorage(entityType);
-    
-    // console.log(`Mock: Created entity with id ${id}`);
     return { success: true, id };
   }
 
   async updateEntity(entityType, id, data) {
-    // console.log(`Mock: Updating entity ${entityType} with id ${id} and data:`, data);
-    
-    if (!this.mockData[entityType]) {
-      this.mockData[entityType] = new Map();
+    if (this.useApi) {
+      try {
+        const params = new URLSearchParams({ type: entityType, id });
+        const res = await fetch(`/api/state?${params.toString()}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
+          const existing = this.mockData[entityType]?.get(id) || {};
+          const updated = { ...existing, ...data, id };
+          if (!this.mockData[entityType]) this.mockData[entityType] = new Map();
+          this.mockData[entityType].set(id, updated);
+          this._saveToStorage(entityType);
+          return await res.json();
+        }
+      } catch (_) {}
     }
-    
+    if (!this.mockData[entityType]) this.mockData[entityType] = new Map();
     const existing = this.mockData[entityType].get(id);
     if (existing) {
       const updated = { ...existing, ...data, id };
       this.mockData[entityType].set(id, updated);
-      this._saveToStorage(entityType);
-      // console.log(`Mock: Updated entity ${id}`);
     } else {
-      // console.log(`Mock: Entity ${id} not found, creating new one`);
       const entity = { ...data, id };
       this.mockData[entityType].set(id, entity);
-      this._saveToStorage(entityType);
     }
-    
+    this._saveToStorage(entityType);
     return { success: true };
   }
 
   async deleteEntity(entityType, id) {
-    // console.log(`Mock: Deleting entity ${entityType} with id ${id}`);
-    
+    if (this.useApi) {
+      try {
+        const params = new URLSearchParams({ type: entityType, id });
+        const res = await fetch(`/api/state?${params.toString()}`, { method: 'DELETE' });
+        if (res.ok) {
+          this.mockData[entityType]?.delete(id);
+          this._saveToStorage(entityType);
+          return await res.json();
+        }
+      } catch (_) {}
+    }
     if (this.mockData[entityType]) {
       this.mockData[entityType].delete(id);
       this._saveToStorage(entityType);
     }
-    
     return { success: true };
   }
 

@@ -49,6 +49,7 @@ A complete Snake game built with Phaser.js that integrates with Solana blockchai
 - Create a `.env` file (see `.env.example`) to configure:
   - `VITE_RECEIVING_WALLET` – wallet address that receives payments
   - `VITE_SOL_RPC` – Solana RPC URL used for payment confirmations
+  - `VITE_USE_API_STORAGE` – set to `1` in production to persist scores via Vercel KV API
 
 Example:
 ```
@@ -57,6 +58,20 @@ VITE_SOL_RPC=https://api.mainnet-beta.solana.com
 ```
 
 Server time for daily reset and prizes comes from `GET /api/time` when deployed (Vercel). During local dev, if the API is unavailable, the game falls back to client Mountain Time (America/Denver) for daily boundaries.
+
+### Persistent scores on Vercel
+
+This project includes an API (`/api/state`) that can save scores and winners to Vercel KV (Upstash Redis). To enable:
+
+1. In Vercel Project Settings → Environment Variables add:
+   - `KV_REST_API_URL` (from your Upstash Redis)
+   - `KV_REST_API_TOKEN` (from your Upstash Redis)
+   - `VITE_USE_API_STORAGE=1`
+2. Redeploy.
+
+Notes:
+- If KV env vars are not set, the app falls back to localStorage (per-browser only).
+- API is built via `api/state.js` and is enabled by `vercel.json`.
 
 ## 🎯 How to Play
 
