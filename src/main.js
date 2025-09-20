@@ -19,37 +19,70 @@ async function getTimeConfig() {
   return TIME_CONFIG_CACHE;
 }
 
-function toMountainDateString(ms) {
+// Robust clipboard copy helper with fallback for older browsers
+function copyToClipboard(text) {
+  return new Promise((resolve, reject) => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(resolve).catch(() => {
+        // Fallback if permissions/API blocked
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.top = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          ok ? resolve() : reject(new Error('copy failed'));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    } else {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        ok ? resolve() : reject(new Error('copy failed'));
+      } catch (e) {
+        reject(e);
+      }
+    }
+  });
+}
+
+// Create a yyyy-mm-dd date key relative to America/Denver timezone
+function toMountainDateKey(ms) {
   const local = new Date(new Date(ms).toLocaleString("en-US", { timeZone: "America/Denver" }));
   return local.toISOString().split('T')[0];
 }
 
 async function getPeriodData() {
-  const cfg = await getTimeConfig();
+  // Compute 24h periods that start at 1:00 PM in America/Denver (Mountain Time), DST-aware
   const nowMs = Date.now();
-  if (cfg && typeof cfg.epochMs === 'number' && typeof cfg.periodMs === 'number') {
-    const { epochMs, periodMs } = cfg;
-    const offset = nowMs - epochMs;
-    const index = Math.floor(offset / periodMs);
-    const startMs = epochMs + index * periodMs;
-    const endMs = startMs + periodMs;
-    const msLeft = Math.max(0, endMs - nowMs);
-    const todayKey = toMountainDateString(startMs);
-    const yesterdayKey = toMountainDateString(startMs - periodMs);
-    return { nowMs, epochMs, periodMs, index, startMs, endMs, msLeft, todayKey, yesterdayKey };
+  const mountainNow = new Date(new Date(nowMs).toLocaleString("en-US", { timeZone: "America/Denver" }));
+  const startLocal = new Date(mountainNow);
+  startLocal.setHours(13, 0, 0, 0); // 1 PM MT today
+  if (mountainNow < startLocal) {
+    // If before today's 1 PM MT, use yesterday's 1 PM MT
+    startLocal.setDate(startLocal.getDate() - 1);
   }
-  // Fallback to client-side Mountain Time midnight boundaries
-  const now = new Date();
-  const mountainTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Denver" }));
-  const tomorrow = new Date(mountainTime);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(0, 0, 0, 0);
-  const msLeft = Math.max(0, tomorrow - mountainTime);
-  const todayKey = mountainTime.toISOString().split('T')[0];
-  const y = new Date(mountainTime);
-  y.setDate(y.getDate() - 1);
-  const yesterdayKey = y.toISOString().split('T')[0];
-  return { nowMs, epochMs: null, periodMs: 24 * 60 * 60 * 1000, index: null, startMs: null, endMs: null, msLeft, todayKey, yesterdayKey };
+  const startMs = startLocal.getTime();
+  const endMs = startMs + 24 * 60 * 60 * 1000;
+  const msLeft = Math.max(0, endMs - nowMs);
+  const todayKey = toMountainDateKey(startMs);
+  const yesterdayKey = toMountainDateKey(startMs - 24 * 60 * 60 * 1000);
+  return { nowMs, epochMs: null, periodMs: 24 * 60 * 60 * 1000, index: null, startMs, endMs, msLeft, todayKey, yesterdayKey };
 }
 
 const client = new StateClient({
@@ -292,18 +325,14 @@ class MenuScene extends Phaser.Scene {
       this.scene.start("LeaderboardScene");
     });
 
-    // Place daily timer under leaderboard button with generous gap
-    this.timerAnchorY = nextY(leaderboardButton, gapLg);
-
-    // Move X username, Play, Leaderboard cluster up slightly
-    const lowerPull = isMobile ? 16 : 20;
+    // Push X username, Play, Leaderboard cluster down a bit to better fill tall phones
+    const lowerPush = isMobile ? Math.round(height * 0.08) : Math.round(height * 0.05);
     [xLabel, xInputBg, this.xText, this.playButton, this.playButtonText, leaderboardButton, this.leaderboardText]
-      .forEach(el => { if (el && typeof el.y === 'number') el.y -= lowerPull; });
-    this.timerAnchorY -= lowerPull;
+      .forEach(el => { if (el && typeof el.y === 'number') el.y += lowerPush; });
 
-    // Pull the section above the X username closer to the title
-    // (do not move the X username box, Play, Leaderboard, or timer)
-    const pullUp = isMobile ? 24 : 32;
+    // Pull the section above the X username slightly closer to the title
+    // (do not move the X username box, Play, or Leaderboard)
+    const pullUp = isMobile ? 12 : 16;
     [subtitle, this.dailyPrizeText, this.connectWalletButton, this.connectWalletText,
      this.walletStatusText, this.paymentStatusText, costText,
      this.paymentButton, this.paymentButtonText].forEach(el => {
@@ -327,40 +356,91 @@ class MenuScene extends Phaser.Scene {
   async correctExistingWinners() {
     try {
       const allWinners = await client.getEntities('daily_winners');
-      const winnersToCorrect = [];
-      for (const winner of allWinners) {
-        const date = winner.date;
-        if (!date) continue;
+      // Group existing winners by date for efficient reconciliation
+      const winnersByDate = new Map();
+      for (const w of allWinners) {
+        if (!w || !w.date) continue;
+        if (!winnersByDate.has(w.date)) winnersByDate.set(w.date, []);
+        winnersByDate.get(w.date).push(w);
+      }
+
+      for (const [date, existing] of winnersByDate.entries()) {
         try {
-          const scores = await client.getEntities('players', { date: date });
-          if (scores.length > 0) {
-            scores.sort((a, b) => b.score - a.score);
-            const actualWinner = scores[0];
-            if (winner.score !== actualWinner.score) {
-              winnersToCorrect.push({ winner, actualWinner, date });
+          const scores = await client.getEntities('players', { date });
+          if (!scores || scores.length === 0) continue;
+          // Determine top score and all unique wallets with that score
+          scores.sort((a, b) => b.score - a.score);
+          const topScore = scores[0].score;
+          const topWalletsSet = new Set();
+          const topWalletInfo = new Map();
+          for (const s of scores) {
+            if (s.score !== topScore) break;
+            if (!topWalletsSet.has(s.wallet)) {
+              topWalletsSet.add(s.wallet);
+              topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
+            }
+          }
+
+          // Calculate pot for the date
+          let dailyPot = 0;
+          try {
+            const payments = await client.getEntities('daily_payments', { date });
+            const totalCollected = payments.reduce((sum, p) => sum + p.amount, 0);
+            dailyPot = totalCollected * 0.9;
+          } catch (e) {
+            console.error("Error calculating daily pot during correction:", e);
+          }
+
+          // Ensure there is one entry per top wallet with stable id winner_<date>_<wallet>
+          const existingByWallet = new Map();
+          for (const w of existing) {
+            existingByWallet.set(w.wallet, w);
+          }
+
+          // Create/update winners for all top wallets
+          for (const wallet of topWalletsSet) {
+            const info = topWalletInfo.get(wallet) || {};
+            const id = `winner_${date}_${wallet}`;
+            const payload = {
+              wallet,
+              xUsername: info.xUsername || "",
+              score: topScore,
+              date,
+              timestamp: Date.now(),
+              dailyPot: dailyPot || 0
+            };
+            const existingExact = await client.getEntity('daily_winners', id);
+            if (existingExact) {
+              await client.updateEntity('daily_winners', id, payload);
+            } else if (existingByWallet.has(wallet)) {
+              // Update the existing record for this wallet (legacy id)
+              await client.updateEntity('daily_winners', existingByWallet.get(wallet).id, payload);
+            } else {
+              await client.createEntity('daily_winners', { id, ...payload });
+            }
+          }
+
+          // Maintain a legacy single-id entry for broad compatibility
+          const firstWallet = Array.from(topWalletsSet)[0];
+          if (firstWallet) {
+            const legacyId = `winner_${date}`;
+            const existingLegacy = await client.getEntity('daily_winners', legacyId);
+            const payload = {
+              wallet: firstWallet,
+              xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
+              score: topScore,
+              date,
+              timestamp: Date.now(),
+              dailyPot: dailyPot || 0
+            };
+            if (existingLegacy) {
+              await client.updateEntity('daily_winners', legacyId, payload);
+            } else {
+              await client.createEntity('daily_winners', { id: legacyId, ...payload });
             }
           }
         } catch (error) {
-          console.error(`Error checking scores for ${date}:`, error);
-        }
-      }
-      for (const { winner, actualWinner, date } of winnersToCorrect) {
-        try {
-          let dailyPot = 0;
-          const payments = await client.getEntities('daily_payments', { date: date });
-          const totalCollected = payments.reduce((sum, payment) => sum + payment.amount, 0);
-          dailyPot = totalCollected * 0.9;
-          await client.updateEntity('daily_winners', winner.id, {
-            wallet: actualWinner.wallet,
-            xUsername: actualWinner.xUsername || "",
-            score: actualWinner.score,
-            date: date,
-            timestamp: winner.timestamp,
-            dailyPot: dailyPot
-          });
-          console.log(`Corrected winner for ${date}: ${winner.score} -> ${actualWinner.score}`);
-        } catch (error) {
-          console.error(`Error correcting winner for ${date}:`, error);
+          console.error(`Error correcting winners for ${date}:`, error);
         }
       }
     } catch (error) {
@@ -398,71 +478,48 @@ class MenuScene extends Phaser.Scene {
         resolve();
         return;
       }
-      if (typeof window.Buffer === 'undefined') {
-        window.Buffer = class Buffer extends Uint8Array {
-          constructor(arg, encoding) {
-            if (typeof arg === 'number') {
-              super(arg);
-            } else if (typeof arg === 'string') {
-              const encoder = new TextEncoder();
-              const bytes = encoder.encode(arg);
-              super(bytes);
-              this.set(bytes);
-            } else if (arg instanceof ArrayBuffer || arg instanceof Uint8Array) {
-              super(arg);
-            } else {
-              super(0);
+      const loadScript = (src) => new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = () => res();
+        s.onerror = () => rej(new Error(`Failed to load ${src}`));
+        document.head.appendChild(s);
+      });
+      (async () => {
+        try {
+          // Ensure Buffer exists (required by solana web3 bundle in browsers)
+          if (!window.Buffer) {
+            await loadScript('https://cdn.jsdelivr.net/npm/buffer@6.0.3/index.min.js');
+            if (window.buffer && window.buffer.Buffer && !window.Buffer) {
+              window.Buffer = window.buffer.Buffer;
             }
-          }
-          static from(data, encoding) {
-            return new Buffer(data, encoding);
-          }
-          static alloc(size, fill = 0) {
-            const buf = new Buffer(size);
-            buf.fill(fill);
-            return buf;
-          }
-          toString(encoding = 'utf8') {
-            if (encoding === 'base64') {
-              return btoa(String.fromCharCode(...this));
+            // On some mobile browsers the iife exposes helpers on window.buffer but not on Buffer
+            // Make sure the common constructors are available
+            if (window.buffer && (!window.Buffer || !window.Buffer.from)) {
+              const buf = window.buffer.Buffer || window.Buffer;
+              if (buf) {
+                window.Buffer = buf;
+                if (!buf.from && window.buffer.from) buf.from = window.buffer.from;
+                if (!buf.alloc && window.buffer.alloc) buf.alloc = window.buffer.alloc;
+                if (!buf.allocUnsafe && window.buffer.allocUnsafe) buf.allocUnsafe = window.buffer.allocUnsafe;
+                if (!buf.concat && window.buffer.concat) buf.concat = window.buffer.concat;
+              }
             }
-            const decoder = new TextDecoder(encoding);
-            return decoder.decode(this);
+            if (!window.Buffer) throw new Error('Buffer polyfill failed to load');
+            if (!window.global) window.global = window; // some libs expect global
+            if (!globalThis.Buffer) globalThis.Buffer = window.Buffer;
+            // Some packages expect a minimal process global
+            if (!window.process) window.process = { env: {} };
+            if (!globalThis.process) globalThis.process = window.process;
           }
-        };
-        window.Buffer.isBuffer = obj => obj instanceof window.Buffer;
-        window.Buffer.concat = buffers => {
-          const totalLength = buffers.reduce((acc, buf) => acc + buf.length, 0);
-          const result = new window.Buffer(totalLength);
-          let offset = 0;
-          for (const buf of buffers) {
-            result.set(buf, offset);
-            offset += buf.length;
-          }
-          return result;
-        };
-      }
-      if (typeof global === 'undefined') {
-        window.global = window;
-      }
-      global.Buffer = window.Buffer;
-      console.log('Enhanced Buffer polyfill loaded for mobile');
-      const script = document.createElement('script');
-      script.src = 'https://unpkg.com/@solana/web3.js@1.78.0/lib/index.iife.min.js';
-      const timeout = setTimeout(() => {
-        reject(new Error('Solana Web3 load timeout'));
-      }, 10000);
-      script.onload = () => {
-        clearTimeout(timeout);
-        console.log('Solana Web3 loaded successfully');
-        this.solanaLoaded = true;
-        resolve();
-      };
-      script.onerror = () => {
-        clearTimeout(timeout);
-        reject(new Error('Failed to load Solana Web3'));
-      };
-      document.head.appendChild(script);
+          await loadScript('https://unpkg.com/@solana/web3.js@1.78.0/lib/index.iife.min.js');
+          if (!window.solanaWeb3) throw new Error('Solana Web3 not available after load');
+          this.solanaLoaded = true;
+          resolve();
+        } catch (e) {
+          reject(e);
+        }
+      })();
     });
   }
 
@@ -606,7 +663,7 @@ class MenuScene extends Phaser.Scene {
         this.updatePaymentUI();
         // Cache the payment status
         localStorage.setItem(`payment_${paymentId}`, JSON.stringify(payment));
-        localStorage.setItem('lastPaymentDate', today);
+        localStorage.setItem('lastPaymentDate', todayKey);
         console.log("Payment found in database for today");
       } else {
         this.hasPaid = false;
@@ -680,34 +737,29 @@ class MenuScene extends Phaser.Scene {
       console.log("To wallet:", this.receivingWallet);
       console.log("Amount: 0.01 SOL");
       const connection = new window.solanaWeb3.Connection(RPC_URL, 'confirmed');
+      const solAmount = 0.01;
+      const lamportsPerSol = 1_000_000_000;
+      const lamportsAmount = Math.round(solAmount * lamportsPerSol);
+      console.log("Lamports amount:", lamportsAmount, "Type:", typeof lamportsAmount);
+
+      // Build and send a standard SystemProgram.transfer transaction via Phantom
       const fromPubkey = new window.solanaWeb3.PublicKey(this.walletAddress);
       const toPubkey = new window.solanaWeb3.PublicKey(this.receivingWallet);
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
       console.log("Got blockhash:", blockhash);
-      const solAmount = 0.01;
-      const lamportsPerSol = 1000000000;
-      const lamportsAmount = Math.floor(solAmount * lamportsPerSol);
-      console.log("Lamports amount:", lamportsAmount, "Type:", typeof lamportsAmount);
       const transaction = new window.solanaWeb3.Transaction({
         recentBlockhash: blockhash,
         feePayer: fromPubkey
       });
-      const transferInstruction = window.solanaWeb3.SystemProgram.transfer({
-        fromPubkey: fromPubkey,
-        toPubkey: toPubkey,
-        lamports: lamportsAmount
-      });
-      transaction.add(transferInstruction);
+      transaction.add(window.solanaWeb3.SystemProgram.transfer({ fromPubkey, toPubkey, lamports: lamportsAmount }));
       console.log("Transaction created, requesting signature...");
-      const signedTransaction = await this.phantom.signAndSendTransaction(transaction, {
-        commitment: 'confirmed'
-      });
-      console.log("Transaction sent:", signedTransaction.signature);
+      const sent = await this.phantom.signAndSendTransaction(transaction, { commitment: 'confirmed' });
+      const signature = sent.signature;
       this.paymentButtonText.setText("CONFIRMING...");
       const confirmation = await connection.confirmTransaction({
-        signature: signedTransaction.signature,
-        blockhash: blockhash,
-        lastValidBlockHeight: lastValidBlockHeight
+        signature,
+        blockhash,
+        lastValidBlockHeight
       }, 'confirmed');
       if (confirmation.value.err) {
         throw new Error(`Transaction failed: ${confirmation.value.err}`);
@@ -720,7 +772,7 @@ class MenuScene extends Phaser.Scene {
         wallet: this.walletAddress,
         amount: 0.01,
         date: todayKey,
-        signature: signedTransaction.signature,
+        signature: signature,
         timestamp: Date.now(),
         confirmed: true
       };
@@ -733,7 +785,7 @@ class MenuScene extends Phaser.Scene {
       this.hasPaid = true;
       this.updatePaymentUI();
       this.updateDailyPrize();
-      alert(`✅ Payment successful!\n\n0.01 SOL sent to: ${this.receivingWallet}\n\nTransaction ID: ${signedTransaction.signature}\n\nYou now have unlimited plays until daily reset!`);
+      alert(`✅ Payment successful!\n\n0.01 SOL sent to: ${this.receivingWallet}\n\nTransaction ID: ${signature}\n\nYou now have unlimited plays until daily reset!`);
     } catch (error) {
       console.error("Payment failed:", error);
       this.paymentButtonText.setText("PAY 0.01 SOL");
@@ -773,7 +825,8 @@ class MenuScene extends Phaser.Scene {
       if (this.timerText) {
         this.timerText.destroy();
       }
-      const y = this.timerAnchorY || (this.scale.height - (isMobile ? 60 : 70));
+      const bottomMargin = isMobile ? 14 : 18;
+      const y = this.scale.height - bottomMargin;
       this.timerText = this.add.text(this.scale.width / 2, y, `Daily Reset: ${hours}h ${minutes}m ${seconds}s`, {
         fontSize: isMobile ? "12px" : "14px",
         color: "#ffff00",
@@ -786,11 +839,25 @@ class MenuScene extends Phaser.Scene {
   async handleDailyReset() {
     try {
       const { yesterdayKey } = await getPeriodData();
-      const existingWinner = await client.getEntity('daily_winners', `winner_${yesterdayKey}`);
+      if (this._lastResetKey === yesterdayKey) {
+        return;
+      }
       const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
       if (yesterdayScores.length > 0) {
+        // Determine top score and all unique wallets with that score
         yesterdayScores.sort((a, b) => b.score - a.score);
-        const actualWinner = yesterdayScores[0];
+        const topScore = yesterdayScores[0].score;
+        const topWalletsSet = new Set();
+        const topWalletInfo = new Map();
+        for (const s of yesterdayScores) {
+          if (s.score !== topScore) break;
+          if (!topWalletsSet.has(s.wallet)) {
+            topWalletsSet.add(s.wallet);
+            topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
+          }
+        }
+
+        // Calculate pot for the day
         let dailyPot = 0;
         try {
           const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
@@ -799,23 +866,46 @@ class MenuScene extends Phaser.Scene {
         } catch (error) {
           console.error("Error calculating daily pot:", error);
         }
-        const winnerData = {
-          wallet: actualWinner.wallet || "Unknown",
-          xUsername: actualWinner.xUsername || "",
-          score: actualWinner.score || 0,
-          date: yesterdayKey,
-          timestamp: Date.now(),
-          dailyPot: dailyPot || 0
-        };
-        if (existingWinner) {
-          console.log(`Updating past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
-          await client.updateEntity('daily_winners', `winner_${yesterdayKey}`, winnerData);
-        } else {
-          console.log(`Creating new past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
-          await client.createEntity('daily_winners', {
-            id: `winner_${yesterdayKey}`,
-            ...winnerData
-          });
+
+        // Create/update a record per top wallet with a stable id
+        for (const wallet of topWalletsSet) {
+          const id = `winner_${yesterdayKey}_${wallet}`;
+          const payload = {
+            wallet,
+            xUsername: (topWalletInfo.get(wallet)?.xUsername) || "",
+            score: topScore,
+            date: yesterdayKey,
+            timestamp: Date.now(),
+            dailyPot: dailyPot || 0
+          };
+          const existing = await client.getEntity('daily_winners', id);
+          if (existing) {
+            console.log(`Updating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+            await client.updateEntity('daily_winners', id, payload);
+          } else {
+            console.log(`Creating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+            await client.createEntity('daily_winners', { id, ...payload });
+          }
+        }
+
+        // Maintain a legacy single entry for compatibility
+        const firstWallet = Array.from(topWalletsSet)[0];
+        if (firstWallet) {
+          const legacyId = `winner_${yesterdayKey}`;
+          const legacyPayload = {
+            wallet: firstWallet,
+            xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
+            score: topScore,
+            date: yesterdayKey,
+            timestamp: Date.now(),
+            dailyPot: dailyPot || 0
+          };
+          const existingLegacy = await client.getEntity('daily_winners', legacyId);
+          if (existingLegacy) {
+            await client.updateEntity('daily_winners', legacyId, legacyPayload);
+          } else {
+            await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
+          }
         }
       }
       if (this.walletAddress) {
@@ -1357,6 +1447,7 @@ class LeaderboardScene extends Phaser.Scene {
       const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
       const dailyPot = totalCollected * 0.9;
       const todayScores = await client.getEntities('players', { date: todayKey });
+      // Show raw top scores (duplicates per wallet allowed)
       todayScores.sort((a, b) => b.score - a.score);
       const top = todayScores.slice(0, 5);
 
@@ -1392,7 +1483,7 @@ class LeaderboardScene extends Phaser.Scene {
 
           playerText.setInteractive({ useHandCursor: true });
           playerText.on('pointerdown', () => {
-            navigator.clipboard.writeText(player.wallet).then(() => {
+            copyToClipboard(player.wallet).then(() => {
               const originalText = displayText;
               playerText.setText(displayText + " (Copied!)");
               this.time.delayedCall(2000, () => {
@@ -1445,8 +1536,7 @@ class LeaderboardScene extends Phaser.Scene {
 
     try {
       const allWinners = await client.getEntities('daily_winners');
-      const validWinners = allWinners.filter(winner => winner && winner.wallet && winner.score !== undefined);
-      validWinners.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      const validWinners = allWinners.filter(w => w && w.wallet && w.score !== undefined && w.date);
 
       if (validWinners.length === 0) {
         this.add.text(width / 2, height / 2, "No past winners yet!\nBe the first daily champion!", {
@@ -1456,60 +1546,90 @@ class LeaderboardScene extends Phaser.Scene {
           align: "center"
         }).setOrigin(0.5);
       } else {
-        this.add.text(width / 2, 105, `🎯 Total Champions: ${validWinners.length}`, {
+        // Group by date, then show all top wallets for each date
+        const byDate = new Map();
+        for (const w of validWinners) {
+          if (!byDate.has(w.date)) byDate.set(w.date, []);
+          byDate.get(w.date).push(w);
+        }
+        // Sort groups by date desc
+        const groups = Array.from(byDate.entries()).sort((a, b) => {
+          // compare by date string (ISO yyyy-mm-dd) desc
+          return a[0] < b[0] ? 1 : (a[0] > b[0] ? -1 : 0);
+        });
+
+        const maxGroups = 6;
+        const visibleGroups = groups.slice(0, maxGroups);
+        this.add.text(width / 2, 105, `🎯 Days Shown: ${visibleGroups.length}`, {
           fontSize: "18px",
           color: "#00ff41",
           fontFamily: "monospace",
           fontWeight: "bold"
         }).setOrigin(0.5);
 
-        const maxVisible = 8;
-        const visibleWinners = validWinners.slice(0, maxVisible);
-        visibleWinners.forEach((winner, index) => {
-          const y = 140 + index * 55;
-          const wallet = winner.wallet || "Unknown";
-          const score = winner.score || 0;
-          const date = winner.date ? new Date(winner.date + "T00:00:00").toLocaleDateString() : "Unknown Date";
-          const dailyPot = winner.dailyPot || 0;
-          const xUsername = winner.xUsername || "";
+        let y = 140;
+        const lineGap = 18;
+        for (const [dateKey, entries] of visibleGroups) {
+          // Determine the top score for this date and only show winners matching that score
+          entries.sort((a, b) => b.score - a.score);
+          const topScore = entries[0]?.score || 0;
+          const winners = entries.filter(e => e.score === topScore);
+          // Deduplicate wallets in case of mixed legacy entries
+          const uniq = new Map();
+          for (const w of winners) {
+            if (!uniq.has(w.wallet)) uniq.set(w.wallet, w);
+          }
+          const winnersList = Array.from(uniq.values());
+          const totalPot = winnersList[0]?.dailyPot || 0;
+          const dateStr = new Date(dateKey + "T00:00:00").toLocaleDateString();
 
-          const walletText = this.add.text(width / 2, y, `🥇 ${wallet}`, {
-            fontSize: "14px",
-            color: "#ffff00",
+          // Group header
+          this.add.text(width / 2, y, `${dateStr} | Top Score: ${topScore} | Pot: ${totalPot.toFixed(3)} SOL | Winners: ${winnersList.length}`, {
+            fontSize: "13px",
+            color: "#ffffff",
             fontFamily: "monospace",
-            fontWeight: "bold"
+            fontStyle: "italic"
           }).setOrigin(0.5);
+          y += lineGap;
 
-          walletText.setInteractive({ useHandCursor: true });
-          walletText.on('pointerdown', () => {
-            navigator.clipboard.writeText(wallet).then(() => {
-              walletText.setText(`🥇 ${wallet} (Copied!)`);
-              this.time.delayedCall(2000, () => {
-                walletText.setText(`🥇 ${wallet}`);
-              });
-            }).catch(() => {
-              console.error('Failed to copy wallet address');
-            });
-          });
-
-          if (xUsername) {
-            this.add.text(width / 2, y + 18, `@${xUsername}`, {
-              fontSize: "12px",
-              color: "#1da1f2",
-              fontFamily: "monospace"
+          // Winners for the day
+          for (const w of winnersList) {
+            const wallet = w.wallet || "Unknown";
+            const xUsername = w.xUsername || "";
+            const walletText = this.add.text(width / 2, y, `🥇 ${wallet}`, {
+              fontSize: "14px",
+              color: "#ffff00",
+              fontFamily: "monospace",
+              fontWeight: "bold"
             }).setOrigin(0.5);
+
+            walletText.setInteractive({ useHandCursor: true });
+            walletText.on('pointerdown', () => {
+              copyToClipboard(wallet).then(() => {
+                walletText.setText(`🥇 ${wallet} (Copied!)`);
+                this.time.delayedCall(2000, () => walletText.setText(`🥇 ${wallet}`));
+              }).catch(() => {
+                console.error('Failed to copy wallet address');
+              });
+            });
+            y += lineGap;
+            if (xUsername) {
+              this.add.text(width / 2, y, `@${xUsername}`, {
+                fontSize: "12px",
+                color: "#1da1f2",
+                fontFamily: "monospace"
+              }).setOrigin(0.5);
+              y += lineGap;
+            }
+            // No per-winner split displayed; prize is sent manually
           }
 
-          const potText = dailyPot > 0 ? ` | Won: ${dailyPot.toFixed(3)} SOL` : " | Won: 0.000 SOL";
-          this.add.text(width / 2, y + (xUsername ? 36 : 18), `Score: ${score} | ${date}${potText}`, {
-            fontSize: "11px",
-            color: "#ffffff",
-            fontFamily: "monospace"
-          }).setOrigin(0.5);
-        });
+          // Extra space between date groups
+          y += 8;
+        }
 
-        if (validWinners.length > maxVisible) {
-          this.add.text(width / 2, 140 + maxVisible * 55, `... and ${validWinners.length - maxVisible} more champions!`, {
+        if (groups.length > maxGroups) {
+          this.add.text(width / 2, y + 10, `... and ${groups.length - maxGroups} more days!`, {
             fontSize: "14px",
             color: "#888888",
             fontFamily: "monospace",
@@ -1557,12 +1677,24 @@ class LeaderboardScene extends Phaser.Scene {
   async handleDailyReset() {
     try {
       const { yesterdayKey } = await getPeriodData();
-      const existingWinner = await client.getEntity('daily_winners', `winner_${yesterdayKey}`);
+      if (this._lastResetKey === yesterdayKey) {
+        return;
+      }
       const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
 
       if (yesterdayScores.length > 0) {
         yesterdayScores.sort((a, b) => b.score - a.score);
-        const actualWinner = yesterdayScores[0];
+        const topScore = yesterdayScores[0].score;
+        const topWalletsSet = new Set();
+        const topWalletInfo = new Map();
+        for (const s of yesterdayScores) {
+          if (s.score !== topScore) break;
+          if (!topWalletsSet.has(s.wallet)) {
+            topWalletsSet.add(s.wallet);
+            topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
+          }
+        }
+
         let dailyPot = 0;
         try {
           const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
@@ -1572,26 +1704,51 @@ class LeaderboardScene extends Phaser.Scene {
           console.error("Error calculating daily pot:", error);
         }
 
-        const winnerData = {
-          wallet: actualWinner.wallet || "Unknown",
-          xUsername: actualWinner.xUsername || "",
-          score: actualWinner.score || 0,
-          date: yesterdayKey,
-          timestamp: Date.now(),
-          dailyPot: dailyPot || 0
-        };
+        // Create/update a record per top wallet with a stable id
+        for (const wallet of topWalletsSet) {
+          const id = `winner_${yesterdayKey}_${wallet}`;
+          const payload = {
+            wallet,
+            xUsername: (topWalletInfo.get(wallet)?.xUsername) || "",
+            score: topScore,
+            date: yesterdayKey,
+            timestamp: Date.now(),
+            dailyPot: dailyPot || 0
+          };
+          const existing = await client.getEntity('daily_winners', id);
+          if (existing) {
+            console.log(`Updating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+            await client.updateEntity('daily_winners', id, payload);
+          } else {
+            console.log(`Creating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+            await client.createEntity('daily_winners', { id, ...payload });
+          }
+        }
 
-        if (existingWinner) {
-          console.log(`Updating past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
-          await client.updateEntity('daily_winners', `winner_${yesterdayKey}`, winnerData);
-        } else {
-          console.log(`Creating new past winner for ${yesterdayKey}: score ${winnerData.score}, pot ${dailyPot.toFixed(3)} SOL`);
-          await client.createEntity('daily_winners', {
-            id: `winner_${yesterdayKey}`,
-            ...winnerData
-          });
+        // Maintain a legacy single entry for compatibility
+        const firstWallet = Array.from(topWalletsSet)[0];
+        if (firstWallet) {
+          const legacyId = `winner_${yesterdayKey}`;
+          const legacyPayload = {
+            wallet: firstWallet,
+            xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
+            score: topScore,
+            date: yesterdayKey,
+            timestamp: Date.now(),
+            dailyPot: dailyPot || 0
+          };
+          const existingLegacy = await client.getEntity('daily_winners', legacyId);
+          if (existingLegacy) {
+            await client.updateEntity('daily_winners', legacyId, legacyPayload);
+          } else {
+            await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
+          }
         }
       }
+      // Refresh the view so the daily pot resets visually
+      try { await this.refreshView(); } catch (_) {}
+      // Mark handled to avoid duplicate work within the reset window
+      this._lastResetKey = yesterdayKey;
     } catch (error) {
       console.error("Error handling daily reset:", error);
     }
@@ -1601,13 +1758,29 @@ class LeaderboardScene extends Phaser.Scene {
 const config = {
   type: Phaser.AUTO,
   scale: {
+    // Fill the parent container and resize with the viewport
     mode: Phaser.Scale.RESIZE,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
     parent: "app",
-    width: window.innerWidth,
-    height: window.innerHeight
+    width: 720,
+    height: 1280
   },
   backgroundColor: "#1A1A28",
   scene: [BootScene, MenuScene, GameScene, GameOverScene, LeaderboardScene]
 };
 
 export const game = new Phaser.Game(config);
+
+// Adjust game base size when orientation changes so it stays tall on phones
+function updateGameOrientation() {
+  const targetW = Math.max(320, Math.floor(window.innerWidth));
+  const targetH = Math.max(480, Math.floor(window.innerHeight));
+  if (game.scale.gameSize.width !== targetW || game.scale.gameSize.height !== targetH) {
+    game.scale.setGameSize(targetW, targetH);
+  }
+}
+
+window.addEventListener('resize', updateGameOrientation);
+window.addEventListener('orientationchange', updateGameOrientation);
+// Run once after boot
+setTimeout(updateGameOrientation, 0);
