@@ -72,7 +72,7 @@ async function getPeriodData() {
   const nowMs = Date.now();
   const mountainNow = new Date(new Date(nowMs).toLocaleString("en-US", { timeZone: "America/Denver" }));
   const startLocal = new Date(mountainNow);
-  startLocal.setHours(13, 0, 0, 0); // 1 PM MT today
+  startLocal.setHours(20, 0, 0, 0); // 8 PM MT today
   if (mountainNow < startLocal) {
     // If before today's 1 PM MT, use yesterday's 1 PM MT
     startLocal.setDate(startLocal.getDate() - 1);
@@ -84,9 +84,19 @@ async function getPeriodData() {
   const yesterdayKey = toMountainDateKey(startMs - 24 * 60 * 60 * 1000);
   return { nowMs, epochMs: null, periodMs: 24 * 60 * 60 * 1000, index: null, startMs, endMs, msLeft, todayKey, yesterdayKey };
 }
+function toFiniteNumber(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const STATE_API_BASE_URL = (import.meta?.env?.VITE_STATE_API_BASE_URL || '').trim();
 
 const client = new StateClient({
-  baseURL: 'https://state.dev.fun',
+  baseURL: STATE_API_BASE_URL || undefined,
+  apiBaseURL: STATE_API_BASE_URL || undefined,
   appId: '2fab5b437cf7dda4bc46'
 });
 
@@ -348,112 +358,14 @@ class MenuScene extends Phaser.Scene {
     this.time.delayedCall(100, () => {
       this.updateDailyPrize();
     });
-    this.time.delayedCall(200, () => {
-      this.correctExistingWinners();
-    });
-  }
-
-  async correctExistingWinners() {
-    try {
-      const allWinners = await client.getEntities('daily_winners');
-      // Group existing winners by date for efficient reconciliation
-      const winnersByDate = new Map();
-      for (const w of allWinners) {
-        if (!w || !w.date) continue;
-        if (!winnersByDate.has(w.date)) winnersByDate.set(w.date, []);
-        winnersByDate.get(w.date).push(w);
-      }
-
-      for (const [date, existing] of winnersByDate.entries()) {
-        try {
-          const scores = await client.getEntities('players', { date });
-          if (!scores || scores.length === 0) continue;
-          // Determine top score and all unique wallets with that score
-          scores.sort((a, b) => b.score - a.score);
-          const topScore = scores[0].score;
-          const topWalletsSet = new Set();
-          const topWalletInfo = new Map();
-          for (const s of scores) {
-            if (s.score !== topScore) break;
-            if (!topWalletsSet.has(s.wallet)) {
-              topWalletsSet.add(s.wallet);
-              topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
-            }
-          }
-
-          // Calculate pot for the date
-          let dailyPot = 0;
-          try {
-            const payments = await client.getEntities('daily_payments', { date });
-            const totalCollected = payments.reduce((sum, p) => sum + p.amount, 0);
-            dailyPot = totalCollected * 0.9;
-          } catch (e) {
-            console.error("Error calculating daily pot during correction:", e);
-          }
-
-          // Ensure there is one entry per top wallet with stable id winner_<date>_<wallet>
-          const existingByWallet = new Map();
-          for (const w of existing) {
-            existingByWallet.set(w.wallet, w);
-          }
-
-          // Create/update winners for all top wallets
-          for (const wallet of topWalletsSet) {
-            const info = topWalletInfo.get(wallet) || {};
-            const id = `winner_${date}_${wallet}`;
-            const payload = {
-              wallet,
-              xUsername: info.xUsername || "",
-              score: topScore,
-              date,
-              timestamp: Date.now(),
-              dailyPot: dailyPot || 0
-            };
-            const existingExact = await client.getEntity('daily_winners', id);
-            if (existingExact) {
-              await client.updateEntity('daily_winners', id, payload);
-            } else if (existingByWallet.has(wallet)) {
-              // Update the existing record for this wallet (legacy id)
-              await client.updateEntity('daily_winners', existingByWallet.get(wallet).id, payload);
-            } else {
-              await client.createEntity('daily_winners', { id, ...payload });
-            }
-          }
-
-          // Maintain a legacy single-id entry for broad compatibility
-          const firstWallet = Array.from(topWalletsSet)[0];
-          if (firstWallet) {
-            const legacyId = `winner_${date}`;
-            const existingLegacy = await client.getEntity('daily_winners', legacyId);
-            const payload = {
-              wallet: firstWallet,
-              xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
-              score: topScore,
-              date,
-              timestamp: Date.now(),
-              dailyPot: dailyPot || 0
-            };
-            if (existingLegacy) {
-              await client.updateEntity('daily_winners', legacyId, payload);
-            } else {
-              await client.createEntity('daily_winners', { id: legacyId, ...payload });
-            }
-          }
-        } catch (error) {
-          console.error(`Error correcting winners for ${date}:`, error);
-        }
-      }
-    } catch (error) {
-      console.error("Error in correctExistingWinners:", error);
-    }
   }
 
   async updateDailyPrize() {
     try {
       const { todayKey } = await getPeriodData();
       const todayPayments = await client.getEntities('daily_payments', { date: todayKey });
-      const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-      const dailyPrize = totalCollected * 0.9;
+      const totalCollected = todayPayments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+      const dailyPrize = toFiniteNumber(totalCollected * 0.9);
       if (this.dailyPrizeText && !this.dailyPrizeText.scene) {
         this.dailyPrizeText = null;
       }
@@ -842,70 +754,88 @@ class MenuScene extends Phaser.Scene {
       if (this._lastResetKey === yesterdayKey) {
         return;
       }
-      const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
-      if (yesterdayScores.length > 0) {
+      const yesterdayScoresRaw = await client.getEntities('players', { date: yesterdayKey });
+      if (yesterdayScoresRaw.length > 0) {
         // Determine top score and all unique wallets with that score
-        yesterdayScores.sort((a, b) => b.score - a.score);
-        const topScore = yesterdayScores[0].score;
-        const topWalletsSet = new Set();
-        const topWalletInfo = new Map();
-        for (const s of yesterdayScores) {
-          if (s.score !== topScore) break;
-          if (!topWalletsSet.has(s.wallet)) {
-            topWalletsSet.add(s.wallet);
-            topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
-          }
-        }
+        const yesterdayScores = yesterdayScoresRaw.map(entry => ({ ...entry, score: toFiniteNumber(entry.score) }))
+          .sort((a, b) => b.score - a.score);
+        const topEntry = yesterdayScores[0];
+        const topScore = topEntry.score;
+        const topWallet = topEntry.wallet || "Anonymous";
+        const topUsername = topEntry.xUsername || "";
 
         // Calculate pot for the day
         let dailyPot = 0;
         try {
           const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
-          const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-          dailyPot = totalCollected * 0.9;
+          const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+          dailyPot = toFiniteNumber(totalCollected * 0.9);
         } catch (error) {
           console.error("Error calculating daily pot:", error);
         }
 
-        // Create/update a record per top wallet with a stable id
-        for (const wallet of topWalletsSet) {
-          const id = `winner_${yesterdayKey}_${wallet}`;
-          const payload = {
-            wallet,
-            xUsername: (topWalletInfo.get(wallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existing = await client.getEntity('daily_winners', id);
-          if (existing) {
-            console.log(`Updating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.updateEntity('daily_winners', id, payload);
-          } else {
-            console.log(`Creating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.createEntity('daily_winners', { id, ...payload });
-          }
+        const timestamp = Date.now();
+        const winnerId = `winner_${yesterdayKey}_${topWallet}`;
+        const payload = {
+          wallet: topWallet,
+          xUsername: topUsername,
+          score: topScore,
+          date: yesterdayKey,
+          timestamp,
+          dailyPot: dailyPot || 0
+        };
+        const existing = await client.getEntity('daily_winners', winnerId);
+        if (existing) {
+          console.log(`Updating past winner ${topWallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+          await client.updateEntity('daily_winners', winnerId, payload);
+        } else {
+          console.log(`Creating past winner ${topWallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+          await client.createEntity('daily_winners', { id: winnerId, ...payload });
         }
 
-        // Maintain a legacy single entry for compatibility
-        const firstWallet = Array.from(topWalletsSet)[0];
-        if (firstWallet) {
-          const legacyId = `winner_${yesterdayKey}`;
-          const legacyPayload = {
-            wallet: firstWallet,
-            xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existingLegacy = await client.getEntity('daily_winners', legacyId);
-          if (existingLegacy) {
-            await client.updateEntity('daily_winners', legacyId, legacyPayload);
-          } else {
-            await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
+        const legacyId = `winner_${yesterdayKey}`;
+        const legacyPayload = {
+          wallet: topWallet,
+          xUsername: topUsername,
+          score: topScore,
+          date: yesterdayKey,
+          timestamp,
+          dailyPot: dailyPot || 0
+        };
+        const existingLegacy = await client.getEntity('daily_winners', legacyId);
+        if (existingLegacy) {
+          await client.updateEntity('daily_winners', legacyId, legacyPayload);
+        } else {
+          await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
+        }
+
+        try {
+          const existingForDate = await client.getEntities('daily_winners', { date: yesterdayKey });
+          const keep = new Set([winnerId, legacyId]);
+          for (const entry of existingForDate) {
+            if (entry?.id && !keep.has(entry.id)) {
+              await client.deleteEntity('daily_winners', entry.id);
+            }
           }
+        } catch (cleanupError) {
+          console.warn('Failed to prune stale winners', cleanupError);
+        }
+        try {
+          // Clear yesterday's leaderboard entries so only past winners retain addresses
+          const entriesToDelete = yesterdayScores.filter(entry => entry?.id);
+          if (entriesToDelete.length > 0) {
+            const results = await Promise.allSettled(
+              entriesToDelete.map(entry => client.deleteEntity('players', entry.id))
+            );
+            results.forEach((result, index) => {
+              if (result.status === 'rejected') {
+                const failed = entriesToDelete[index];
+                console.warn(`Failed to remove player entry ${failed?.id} for ${yesterdayKey}`, result.reason);
+              }
+            });
+          }
+        } catch (pruneError) {
+          console.warn('Failed to clear daily leaderboard entries for rollover', pruneError);
         }
       }
       if (this.walletAddress) {
@@ -1319,6 +1249,7 @@ class LeaderboardScene extends Phaser.Scene {
   constructor() {
     super({ key: "LeaderboardScene" });
     this.currentView = "leaderboard";
+    this._lastResetKey = null;
   }
 
   async create() {
@@ -1361,6 +1292,7 @@ class LeaderboardScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     await this.refreshView();
+    await this.ensurePreviousDayWinner();
   }
 
   async refreshView() {
@@ -1444,12 +1376,14 @@ class LeaderboardScene extends Phaser.Scene {
     try {
       const { todayKey } = await getPeriodData();
       const todayPayments = await client.getEntities('daily_payments', { date: todayKey });
-      const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-      const dailyPot = totalCollected * 0.9;
+      const totalCollected = todayPayments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+      const dailyPot = toFiniteNumber(totalCollected * 0.9);
       const todayScores = await client.getEntities('players', { date: todayKey });
+      const sortedScores = todayScores
+        .map(entry => ({ ...entry, score: toFiniteNumber(entry.score) }))
+        .sort((a, b) => b.score - a.score);
       // Show raw top scores (duplicates per wallet allowed)
-      todayScores.sort((a, b) => b.score - a.score);
-      const top = todayScores.slice(0, 5);
+      const top = sortedScores.slice(0, 5);
 
       this.add.text(width / 2, 105, `💰 Daily Pot: ${dailyPot.toFixed(3)} SOL 💰`, {
         fontSize: "20px",
@@ -1471,7 +1405,8 @@ class LeaderboardScene extends Phaser.Scene {
           const rank = index + 1;
           const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}.`;
           const color = rank === 1 ? "#ffff00" : rank === 2 ? "#c0c0c0" : rank === 3 ? "#cd7f32" : "#ffffff";
-          let displayText = `${medal} ${player.wallet.substring(0, 8)}... - ${player.score}`;
+          const scoreValue = player.score;
+          let displayText = `${medal} ${player.wallet.substring(0, 8)}... - ${scoreValue}`;
           if (player.xUsername) {
             displayText += ` (@${player.xUsername})`;
           }
@@ -1536,7 +1471,9 @@ class LeaderboardScene extends Phaser.Scene {
 
     try {
       const allWinners = await client.getEntities('daily_winners');
-      const validWinners = allWinners.filter(w => w && w.wallet && w.score !== undefined && w.date);
+      const validWinners = allWinners
+        .filter(w => w && w.wallet && w.score !== undefined && w.date)
+        .map(w => ({ ...w, score: toFiniteNumber(w.score), dailyPot: toFiniteNumber(w.dailyPot) }));
 
       if (validWinners.length === 0) {
         this.add.text(width / 2, height / 2, "No past winners yet!\nBe the first daily champion!", {
@@ -1571,16 +1508,16 @@ class LeaderboardScene extends Phaser.Scene {
         const lineGap = 18;
         for (const [dateKey, entries] of visibleGroups) {
           // Determine the top score for this date and only show winners matching that score
-          entries.sort((a, b) => b.score - a.score);
-          const topScore = entries[0]?.score || 0;
-          const winners = entries.filter(e => e.score === topScore);
+          const sortedEntries = [...entries].sort((a, b) => b.score - a.score);
+          const topScore = sortedEntries[0]?.score || 0;
+          const winners = sortedEntries.filter(e => e.score === topScore);
           // Deduplicate wallets in case of mixed legacy entries
           const uniq = new Map();
           for (const w of winners) {
             if (!uniq.has(w.wallet)) uniq.set(w.wallet, w);
           }
           const winnersList = Array.from(uniq.values());
-          const totalPot = winnersList[0]?.dailyPot || 0;
+          const totalPot = toFiniteNumber(winnersList[0]?.dailyPot ?? sortedEntries[0]?.dailyPot ?? 0);
           const dateStr = new Date(dateKey + "T00:00:00").toLocaleDateString();
 
           // Group header
@@ -1680,77 +1617,92 @@ class LeaderboardScene extends Phaser.Scene {
       if (this._lastResetKey === yesterdayKey) {
         return;
       }
-      const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
-
-      if (yesterdayScores.length > 0) {
-        yesterdayScores.sort((a, b) => b.score - a.score);
-        const topScore = yesterdayScores[0].score;
-        const topWalletsSet = new Set();
-        const topWalletInfo = new Map();
-        for (const s of yesterdayScores) {
-          if (s.score !== topScore) break;
-          if (!topWalletsSet.has(s.wallet)) {
-            topWalletsSet.add(s.wallet);
-            topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
-          }
-        }
-
-        let dailyPot = 0;
-        try {
-          const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
-          const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-          dailyPot = totalCollected * 0.9;
-        } catch (error) {
-          console.error("Error calculating daily pot:", error);
-        }
-
-        // Create/update a record per top wallet with a stable id
-        for (const wallet of topWalletsSet) {
-          const id = `winner_${yesterdayKey}_${wallet}`;
-          const payload = {
-            wallet,
-            xUsername: (topWalletInfo.get(wallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existing = await client.getEntity('daily_winners', id);
-          if (existing) {
-            console.log(`Updating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.updateEntity('daily_winners', id, payload);
-          } else {
-            console.log(`Creating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.createEntity('daily_winners', { id, ...payload });
-          }
-        }
-
-        // Maintain a legacy single entry for compatibility
-        const firstWallet = Array.from(topWalletsSet)[0];
-        if (firstWallet) {
-          const legacyId = `winner_${yesterdayKey}`;
-          const legacyPayload = {
-            wallet: firstWallet,
-            xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existingLegacy = await client.getEntity('daily_winners', legacyId);
-          if (existingLegacy) {
-            await client.updateEntity('daily_winners', legacyId, legacyPayload);
-          } else {
-            await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
-          }
-        }
-      }
-      // Refresh the view so the daily pot resets visually
+      await this.persistWinnerForDate(yesterdayKey);
       try { await this.refreshView(); } catch (_) {}
-      // Mark handled to avoid duplicate work within the reset window
       this._lastResetKey = yesterdayKey;
     } catch (error) {
       console.error("Error handling daily reset:", error);
+    }
+  }
+
+  async ensurePreviousDayWinner() {
+    try {
+      const { yesterdayKey } = await getPeriodData();
+      if (!yesterdayKey) return;
+      const existing = await client.getEntity('daily_winners', `winner_${yesterdayKey}`);
+      if (!existing) {
+        await this.persistWinnerForDate(yesterdayKey);
+        this._lastResetKey = yesterdayKey;
+        try { await this.refreshView(); } catch (_) {}
+      }
+    } catch (error) {
+      console.error('Error ensuring previous winner:', error);
+    }
+  }
+
+  async persistWinnerForDate(dateKey) {
+    if (!dateKey) return;
+    const scoresRaw = await client.getEntities('players', { date: dateKey });
+    if (!scoresRaw || scoresRaw.length === 0) return;
+
+    const sortedScores = scoresRaw.map(entry => ({ ...entry, score: toFiniteNumber(entry.score) }))
+      .sort((a, b) => b.score - a.score);
+    const topEntry = sortedScores[0];
+    const topWallet = topEntry.wallet || 'Anonymous';
+    const topUsername = topEntry.xUsername || '';
+    const topScore = toFiniteNumber(topEntry.score);
+
+    let dailyPot = 0;
+    try {
+      const payments = await client.getEntities('daily_payments', { date: dateKey });
+      const totalCollected = payments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+      dailyPot = toFiniteNumber(totalCollected * 0.9);
+    } catch (error) {
+      console.error('Error calculating daily pot:', error);
+    }
+
+    const timestamp = Date.now();
+    const winnerId = `winner_${dateKey}_${topWallet}`;
+    const payload = {
+      wallet: topWallet,
+      xUsername: topUsername,
+      score: topScore,
+      date: dateKey,
+      timestamp,
+      dailyPot: dailyPot || 0
+    };
+    const existingWinner = await client.getEntity('daily_winners', winnerId);
+    if (existingWinner) {
+      await client.updateEntity('daily_winners', winnerId, payload);
+    } else {
+      await client.createEntity('daily_winners', { id: winnerId, ...payload });
+    }
+
+    const legacyId = `winner_${dateKey}`;
+    const legacyPayload = { ...payload, id: legacyId };
+    const existingLegacy = await client.getEntity('daily_winners', legacyId);
+    if (existingLegacy) {
+      await client.updateEntity('daily_winners', legacyId, legacyPayload);
+    } else {
+      await client.createEntity('daily_winners', legacyPayload);
+    }
+
+    try {
+      // Clear the completed day's leaderboard entries so only past winners retain addresses
+      const entriesToDelete = sortedScores.filter(entry => entry?.id);
+      if (entriesToDelete.length > 0) {
+        const results = await Promise.allSettled(
+          entriesToDelete.map(entry => client.deleteEntity('players', entry.id))
+        );
+        results.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            const failed = entriesToDelete[index];
+            console.warn(`Failed to remove player entry ${failed?.id} for ${dateKey}`, result.reason);
+          }
+        });
+      }
+    } catch (pruneError) {
+      console.warn('Failed to clear daily leaderboard entries for rollover', pruneError);
     }
   }
 }
@@ -1784,3 +1736,4 @@ window.addEventListener('resize', updateGameOrientation);
 window.addEventListener('orientationchange', updateGameOrientation);
 // Run once after boot
 setTimeout(updateGameOrientation, 0);
+

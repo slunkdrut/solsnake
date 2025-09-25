@@ -10,8 +10,9 @@
   },
   "dependencies": {
     "@solana/web3.js": "^1.78.0",
+    "@vercel/kv": "^2.0.0",
     "phaser": "^3.70.0",
-    "@vercel/kv": "^2.0.0"
+    "redis": "^5.8.2"
   },
   "devDependencies": {
     "vite": "^5.4.20"
