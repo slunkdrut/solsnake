@@ -11,6 +11,7 @@
   "dependencies": {
     "@solana/web3.js": "^1.78.0",
     "@vercel/kv": "^2.0.0",
+    "buffer": "^6.0.3",
     "phaser": "^3.70.0",
     "redis": "^5.8.2"
   },
