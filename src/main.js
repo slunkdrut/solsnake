@@ -1,5 +1,46 @@
 import * as Phaser from "phaser";
 import { StateClient } from './mockStateClient.js';
+import { Buffer as BufferPolyfill } from 'buffer';
+
+// Ensure Buffer/process globals exist before loading Solana libs
+function ensureBrowserPolyfills() {
+  const bufferImpl = BufferPolyfill;
+  const globalObj = typeof globalThis !== 'undefined' ? globalThis : undefined;
+  const windowObj = typeof window !== 'undefined' ? window : undefined;
+
+  if (globalObj && (!globalObj.Buffer || typeof globalObj.Buffer.from !== 'function')) {
+    globalObj.Buffer = bufferImpl;
+  }
+  if (windowObj && (!windowObj.Buffer || typeof windowObj.Buffer.from !== 'function')) {
+    windowObj.Buffer = bufferImpl;
+  }
+
+  const processShim = (globalObj && globalObj.process) || (windowObj && windowObj.process) || { env: {} };
+  if (!processShim.env) {
+    processShim.env = {};
+  }
+
+  if (windowObj) {
+    if (!windowObj.process) {
+      windowObj.process = processShim;
+    }
+    if (!windowObj.global) {
+      windowObj.global = windowObj;
+    }
+  }
+
+  if (globalObj) {
+    if (!globalObj.process) {
+      globalObj.process = processShim;
+    }
+    if (!globalObj.global) {
+      globalObj.global = globalObj;
+    }
+  }
+}
+
+ensureBrowserPolyfills();
+
 
 // Env-configured values with sensible fallbacks
 const RECEIVING_WALLET = (import.meta?.env?.VITE_RECEIVING_WALLET) || "5pLqMhYx9zmsdCAsRRcTMtEahFzGvQAfs2CzPfeTF14L";
@@ -72,7 +113,7 @@ async function getPeriodData() {
   const nowMs = Date.now();
   const mountainNow = new Date(new Date(nowMs).toLocaleString("en-US", { timeZone: "America/Denver" }));
   const startLocal = new Date(mountainNow);
-  startLocal.setHours(13, 0, 0, 0); // 1 PM MT today
+  startLocal.setHours(20, 0, 0, 0); // 8 PM MT today
   if (mountainNow < startLocal) {
     // If before today's 1 PM MT, use yesterday's 1 PM MT
     startLocal.setDate(startLocal.getDate() - 1);
@@ -84,9 +125,19 @@ async function getPeriodData() {
   const yesterdayKey = toMountainDateKey(startMs - 24 * 60 * 60 * 1000);
   return { nowMs, epochMs: null, periodMs: 24 * 60 * 60 * 1000, index: null, startMs, endMs, msLeft, todayKey, yesterdayKey };
 }
+function toFiniteNumber(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const STATE_API_BASE_URL = (import.meta?.env?.VITE_STATE_API_BASE_URL || '').trim();
 
 const client = new StateClient({
-  baseURL: 'https://state.dev.fun',
+  baseURL: STATE_API_BASE_URL || undefined,
+  apiBaseURL: STATE_API_BASE_URL || undefined,
   appId: '2fab5b437cf7dda4bc46'
 });
 
@@ -114,6 +165,8 @@ class BootScene extends Phaser.Scene {
     // Load local audio files
     this.load.audio("bgMusic", "/assets/evilquent.mp3");
     this.load.audio("biteSound", "/assets/bite.mp3");
+    this.load.audio("turnSound", "/assets/snake_move_chime.wav");
+    this.load.audio("deathSound", "/assets/snake_fail_mario_vibrato.wav");
     
     this.load.setTimeout = 5000;
   }
@@ -172,11 +225,12 @@ class MenuScene extends Phaser.Scene {
     const isActualMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const isPhantomBrowser = window.solana && window.solana.isPhantom;
 
-    // Compact vertical layout using dynamic bounds to avoid overlap
-    // Increased gaps for clearer spacing
+    // Baseline spacing before running the even distribution pass
     const gapSm = isMobile ? 14 : 18;
     const gapMd = isMobile ? 22 : 28;
     const gapLg = isMobile ? 28 : 36;
+    const paymentToUsernameGap = isMobile ? 8 : 14;
+    const usernameLabelToFieldGap = isMobile ? 6 : 10;
     let y = isMobile ? Math.round(height * 0.08) : Math.round(height * 0.12);
     const nextY = (display, gap) => Math.round(display.getBounds().bottom + gap);
 
@@ -209,7 +263,7 @@ class MenuScene extends Phaser.Scene {
     this.connectWalletButton.setStrokeStyle(3, 0xffffff);
     let connectText = "CONNECT PHANTOM WALLET";
     if (isActualMobile) {
-      connectText = isPhantomBrowser ? "CONNECT WALLET" : "OPEN IN PHANTOM BROWSER";
+      connectText = isPhantomBrowser ? "CONNECT WALLET" : "OPEN IN PHANTOM APP";
     }
     this.connectWalletText = this.add.text(width / 2, y, connectText, {
       fontSize: isMobile ? "12px" : "16px",
@@ -226,7 +280,13 @@ class MenuScene extends Phaser.Scene {
       }
     });
 
-    this.walletStatusText = this.add.text(width / 2, nextY(this.connectWalletButton, gapSm), isActualMobile && !isPhantomBrowser ? "For best experience, use Phantom browser" : "Connect wallet to continue", {
+    const walletStatusMessage = (() => {
+      if (isActualMobile && !isPhantomBrowser) {
+        return "Tap above to launch Phantom and reopen Solsnake";
+      }
+      return "Connect wallet to continue";
+    })();
+    this.walletStatusText = this.add.text(width / 2, nextY(this.connectWalletButton, gapSm), walletStatusMessage, {
       fontSize: isMobile ? "10px" : "14px",
       color: "#888888",
       fontFamily: "monospace"
@@ -261,15 +321,15 @@ class MenuScene extends Phaser.Scene {
     });
 
     // X username input
-    const xLabel = this.add.text(width / 2, nextY(this.paymentButton, gapLg), "X.com username (optional):", {
+    const xLabel = this.add.text(width / 2, nextY(this.paymentButton, paymentToUsernameGap), "X.com username:", {
       fontSize: isMobile ? "12px" : "16px",
       color: "#ffffff",
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
-    const xInputBg = this.add.rectangle(width / 2, nextY(xLabel, gapMd), isMobile ? 260 : 300, isMobile ? 30 : 40, 0x333333);
+    const xInputBg = this.add.rectangle(width / 2, nextY(xLabel, usernameLabelToFieldGap), isMobile ? 260 : 300, isMobile ? 30 : 40, 0x333333);
     xInputBg.setStrokeStyle(2, 0x1da1f2);
-    this.xText = this.add.text(width / 2, xInputBg.y, "Click to enter X username", {
+    this.xText = this.add.text(width / 2, xInputBg.y, "Click to enter X username (optional)", {
       fontSize: isMobile ? "11px" : "14px",
       color: "#888888",
       fontFamily: "monospace"
@@ -325,135 +385,103 @@ class MenuScene extends Phaser.Scene {
       this.scene.start("LeaderboardScene");
     });
 
-    // Push X username, Play, Leaderboard cluster down a bit to better fill tall phones
-    const lowerPush = isMobile ? Math.round(height * 0.08) : Math.round(height * 0.05);
-    [xLabel, xInputBg, this.xText, this.playButton, this.playButtonText, leaderboardButton, this.leaderboardText]
-      .forEach(el => { if (el && typeof el.y === 'number') el.y += lowerPush; });
+    const layoutRows = [
+      [title],
+      [subtitle],
+      [this.dailyPrizeText],
+      [this.connectWalletButton, this.connectWalletText],
+      [this.walletStatusText],
+      [this.paymentStatusText],
+      [costText],
+      [this.paymentButton, this.paymentButtonText],
+      [xLabel],
+      [xInputBg, this.xText],
+      [this.playButton, this.playButtonText],
+      [leaderboardButton, this.leaderboardText]
+    ];
 
-    // Pull the section above the X username slightly closer to the title
-    // (do not move the X username box, Play, or Leaderboard)
-    const pullUp = isMobile ? 12 : 16;
-    [subtitle, this.dailyPrizeText, this.connectWalletButton, this.connectWalletText,
-     this.walletStatusText, this.paymentStatusText, costText,
-     this.paymentButton, this.paymentButtonText].forEach(el => {
-      if (el && typeof el.y === 'number') el.y -= pullUp;
-    });
+    const distributeRows = (rows) => {
+      const rowMeta = rows.map(group => {
+        const height = group.reduce((max, el) => {
+          const bounds = el.getBounds();
+          return Math.max(max, bounds.height);
+        }, 0);
+        return { group, height: Math.max(height, 1) };
+      });
 
-    // Removed disclaimer and description text per request
+      const topMargin = isMobile ? Math.round(height * 0.08) : Math.round(height * 0.1);
+      const bottomMargin = isMobile ? Math.round(height * 0.1) : Math.round(height * 0.12);
+      const minGap = isMobile ? 12 : 18;
+      const availableSpace = height - topMargin - bottomMargin;
+      const totalRowsHeight = rowMeta.reduce((sum, row) => sum + row.height, 0);
+      const rowCount = rowMeta.length;
+      let gap = rowCount > 1 ? (availableSpace - totalRowsHeight) / (rowCount - 1) : 0;
+      if (!Number.isFinite(gap)) {
+        gap = minGap;
+      }
+      gap = Math.max(gap, minGap);
+
+      const layoutHeight = totalRowsHeight + gap * Math.max(rowCount - 1, 0);
+      const rawStart = (height - layoutHeight) / 2;
+      const maxStart = height - layoutHeight - bottomMargin;
+      let startY;
+      if (!Number.isFinite(rawStart)) {
+        startY = topMargin;
+      } else if (maxStart < topMargin) {
+        startY = topMargin;
+      } else {
+        startY = Math.min(Math.max(rawStart, topMargin), maxStart);
+      }
+
+      let currentTop = startY;
+      rowMeta.forEach(({ group, height: rowHeight }) => {
+        const centerY = currentTop + rowHeight / 2;
+        group.forEach(el => {
+          if (typeof el.setY === 'function') {
+            el.setY(centerY);
+          } else {
+            el.y = centerY;
+          }
+        });
+        currentTop += rowHeight + gap;
+      });
+    };
+
+    distributeRows(layoutRows);
+
+    // Ensure paired text stays centered with their buttons after distribution
+    this.connectWalletText.setY(this.connectWalletButton.y);
+    this.paymentButtonText.setY(this.paymentButton.y);
+    this.xText.setY(xInputBg.y);
+    this.playButtonText.setY(this.playButton.y);
+    this.leaderboardText.setY(leaderboardButton.y);
 
     this.updateDailyTimer();
-    if (!isActualMobile) {
+    if (isPhantomBrowser) {
+      this.checkPhantomWallet();
+      this.time.delayedCall(120, async () => {
+        if (!this.solanaLoaded) {
+          try {
+            await this.loadSolanaWeb3();
+          } catch (error) {
+            console.error('Failed to preload Solana Web3:', error);
+          }
+        }
+      });
+    } else if (!isActualMobile) {
       this.checkPhantomWallet();
     }
     this.time.delayedCall(100, () => {
       this.updateDailyPrize();
     });
-    this.time.delayedCall(200, () => {
-      this.correctExistingWinners();
-    });
-  }
-
-  async correctExistingWinners() {
-    try {
-      const allWinners = await client.getEntities('daily_winners');
-      // Group existing winners by date for efficient reconciliation
-      const winnersByDate = new Map();
-      for (const w of allWinners) {
-        if (!w || !w.date) continue;
-        if (!winnersByDate.has(w.date)) winnersByDate.set(w.date, []);
-        winnersByDate.get(w.date).push(w);
-      }
-
-      for (const [date, existing] of winnersByDate.entries()) {
-        try {
-          const scores = await client.getEntities('players', { date });
-          if (!scores || scores.length === 0) continue;
-          // Determine top score and all unique wallets with that score
-          scores.sort((a, b) => b.score - a.score);
-          const topScore = scores[0].score;
-          const topWalletsSet = new Set();
-          const topWalletInfo = new Map();
-          for (const s of scores) {
-            if (s.score !== topScore) break;
-            if (!topWalletsSet.has(s.wallet)) {
-              topWalletsSet.add(s.wallet);
-              topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
-            }
-          }
-
-          // Calculate pot for the date
-          let dailyPot = 0;
-          try {
-            const payments = await client.getEntities('daily_payments', { date });
-            const totalCollected = payments.reduce((sum, p) => sum + p.amount, 0);
-            dailyPot = totalCollected * 0.9;
-          } catch (e) {
-            console.error("Error calculating daily pot during correction:", e);
-          }
-
-          // Ensure there is one entry per top wallet with stable id winner_<date>_<wallet>
-          const existingByWallet = new Map();
-          for (const w of existing) {
-            existingByWallet.set(w.wallet, w);
-          }
-
-          // Create/update winners for all top wallets
-          for (const wallet of topWalletsSet) {
-            const info = topWalletInfo.get(wallet) || {};
-            const id = `winner_${date}_${wallet}`;
-            const payload = {
-              wallet,
-              xUsername: info.xUsername || "",
-              score: topScore,
-              date,
-              timestamp: Date.now(),
-              dailyPot: dailyPot || 0
-            };
-            const existingExact = await client.getEntity('daily_winners', id);
-            if (existingExact) {
-              await client.updateEntity('daily_winners', id, payload);
-            } else if (existingByWallet.has(wallet)) {
-              // Update the existing record for this wallet (legacy id)
-              await client.updateEntity('daily_winners', existingByWallet.get(wallet).id, payload);
-            } else {
-              await client.createEntity('daily_winners', { id, ...payload });
-            }
-          }
-
-          // Maintain a legacy single-id entry for broad compatibility
-          const firstWallet = Array.from(topWalletsSet)[0];
-          if (firstWallet) {
-            const legacyId = `winner_${date}`;
-            const existingLegacy = await client.getEntity('daily_winners', legacyId);
-            const payload = {
-              wallet: firstWallet,
-              xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
-              score: topScore,
-              date,
-              timestamp: Date.now(),
-              dailyPot: dailyPot || 0
-            };
-            if (existingLegacy) {
-              await client.updateEntity('daily_winners', legacyId, payload);
-            } else {
-              await client.createEntity('daily_winners', { id: legacyId, ...payload });
-            }
-          }
-        } catch (error) {
-          console.error(`Error correcting winners for ${date}:`, error);
-        }
-      }
-    } catch (error) {
-      console.error("Error in correctExistingWinners:", error);
-    }
   }
 
   async updateDailyPrize() {
     try {
       const { todayKey } = await getPeriodData();
       const todayPayments = await client.getEntities('daily_payments', { date: todayKey });
-      const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-      const dailyPrize = totalCollected * 0.9;
+      const totalCollected = todayPayments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+      const dailyPrize = toFiniteNumber(totalCollected * 0.9);
       if (this.dailyPrizeText && !this.dailyPrizeText.scene) {
         this.dailyPrizeText = null;
       }
@@ -487,32 +515,11 @@ class MenuScene extends Phaser.Scene {
       });
       (async () => {
         try {
-          // Ensure Buffer exists (required by solana web3 bundle in browsers)
-          if (!window.Buffer) {
-            await loadScript('https://cdn.jsdelivr.net/npm/buffer@6.0.3/index.min.js');
-            if (window.buffer && window.buffer.Buffer && !window.Buffer) {
-              window.Buffer = window.buffer.Buffer;
-            }
-            // On some mobile browsers the iife exposes helpers on window.buffer but not on Buffer
-            // Make sure the common constructors are available
-            if (window.buffer && (!window.Buffer || !window.Buffer.from)) {
-              const buf = window.buffer.Buffer || window.Buffer;
-              if (buf) {
-                window.Buffer = buf;
-                if (!buf.from && window.buffer.from) buf.from = window.buffer.from;
-                if (!buf.alloc && window.buffer.alloc) buf.alloc = window.buffer.alloc;
-                if (!buf.allocUnsafe && window.buffer.allocUnsafe) buf.allocUnsafe = window.buffer.allocUnsafe;
-                if (!buf.concat && window.buffer.concat) buf.concat = window.buffer.concat;
-              }
-            }
-            if (!window.Buffer) throw new Error('Buffer polyfill failed to load');
-            if (!window.global) window.global = window; // some libs expect global
-            if (!globalThis.Buffer) globalThis.Buffer = window.Buffer;
-            // Some packages expect a minimal process global
-            if (!window.process) window.process = { env: {} };
-            if (!globalThis.process) globalThis.process = window.process;
+          ensureBrowserPolyfills();
+          if (!window.solanaWeb3) {
+            await loadScript('https://unpkg.com/@solana/web3.js@1.78.0/lib/index.iife.min.js');
           }
-          await loadScript('https://unpkg.com/@solana/web3.js@1.78.0/lib/index.iife.min.js');
+          ensureBrowserPolyfills();
           if (!window.solanaWeb3) throw new Error('Solana Web3 not available after load');
           this.solanaLoaded = true;
           resolve();
@@ -541,9 +548,7 @@ class MenuScene extends Phaser.Scene {
     const isActualMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const isPhantomBrowser = window.solana && window.solana.isPhantom;
     if (isActualMobile && !isPhantomBrowser) {
-      const currentUrl = window.location.href;
-      const phantomUrl = `https://phantom.app/ul/browse/${encodeURIComponent(currentUrl)}?ref=${encodeURIComponent(currentUrl)}`;
-      window.open(phantomUrl, "_blank");
+      this.launchPhantomDeepLink();
       return;
     }
     if (!isPhantomBrowser) {
@@ -571,6 +576,32 @@ class MenuScene extends Phaser.Scene {
       console.error("Failed to connect wallet:", error);
       this.connectWalletText.setText("CONNECT PHANTOM WALLET");
       alert("Failed to connect to Phantom wallet!");
+    }
+  }
+
+  launchPhantomDeepLink() {
+    const currentUrl = window.location.href.split('#')[0];
+    const phantomUrl = `https://phantom.app/ul/browse/${encodeURIComponent(currentUrl)}?ref=${encodeURIComponent(currentUrl)}`;
+    const fallbackTimer = window.setTimeout(() => {
+      if (!document.hidden && this.walletStatusText) {
+        this.walletStatusText.setText("Open Phantom, tap Browser, then visit solsnake.io manually");
+        this.walletStatusText.setColor("#ff8800");
+      }
+    }, 1800);
+    const handleVisibility = () => {
+      if (document.hidden) {
+        window.clearTimeout(fallbackTimer);
+        window.removeEventListener('visibilitychange', handleVisibility);
+      }
+    };
+    window.addEventListener('visibilitychange', handleVisibility);
+    try {
+      window.location.href = phantomUrl;
+    } catch (error) {
+      window.clearTimeout(fallbackTimer);
+      window.removeEventListener('visibilitychange', handleVisibility);
+      console.error('Failed to open Phantom deep link:', error);
+      window.open("https://phantom.app/", "_blank");
     }
   }
 
@@ -606,6 +637,7 @@ class MenuScene extends Phaser.Scene {
   }
 
   updateDisconnectedUI() {
+    const isMobile = this.scale.width < 800;
     this.connectWalletText.setText("CONNECT PHANTOM WALLET");
     this.connectWalletButton.setFillStyle(0x8a2be2);
     this.connectWalletButton.setStrokeStyle(3, 0xffffff);
@@ -616,14 +648,15 @@ class MenuScene extends Phaser.Scene {
     this.paymentButton.setFillStyle(0x666666);
     this.paymentButton.setStrokeStyle(3, 0x888888);
     this.paymentButtonText.setText("PAY 0.01 SOL");
-    this.paymentButtonText.setColor("#888888");
+    this.paymentButtonText.setStyle({
+      fontSize: isMobile ? "13px" : "18px",
+      color: "#888888",
+      align: "center"
+    });
+    this.paymentButtonText.setLineSpacing(0);
     this.playButton.setFillStyle(0x666666);
     this.playButton.setStrokeStyle(3, 0x888888);
     this.playButtonText.setColor("#888888");
-    if (this.goodLuckText) {
-      this.goodLuckText.destroy();
-      this.goodLuckText = null;
-    }
   }
 
   async checkDailyPayment() {
@@ -678,27 +711,19 @@ class MenuScene extends Phaser.Scene {
   updatePaymentUI() {
     this.paymentStatusText.setText("PAYMENT RECEIVED");
     this.paymentStatusText.setColor("#00ff41");
-    this.paymentButtonText.setText("✓ PAID TODAY");
-    this.paymentButtonText.setColor("#00ff41");
+    const isMobile = this.scale.width < 800;
+    this.paymentButtonText.setText(["✓ PAID TODAY", "GOOD LUCK!"]);
+    this.paymentButtonText.setStyle({
+      fontSize: isMobile ? "12px" : "18px",
+      color: "#000000",
+      align: "center"
+    });
+    this.paymentButtonText.setLineSpacing(isMobile ? 2 : 6);
     this.paymentButton.setFillStyle(0x00ff41);
     this.paymentButton.setStrokeStyle(3, 0xffffff);
     this.playButton.setFillStyle(0x00ff41);
     this.playButton.setStrokeStyle(3, 0xffffff);
     this.playButtonText.setColor("#000000");
-    if (this.goodLuckText) {
-      this.goodLuckText.destroy();
-    }
-    const isMobile = this.scale.width < 800;
-    const { width } = this.scale;
-    // Position GOOD LUCK just above the X username label
-    // Slightly closer for a tighter grouping under payment
-    const belowPayment = (this.paymentButton?.y || 0) + (isMobile ? 44 : 52);
-    this.goodLuckText = this.add.text(width / 2, belowPayment, "GOOD LUCK!", {
-      fontSize: isMobile ? "11px" : "14px",
-      color: "#ffffff",
-      fontFamily: "monospace",
-      fontWeight: "bold"
-    }).setOrigin(0.5);
   }
 
   async processPayment() {
@@ -842,70 +867,88 @@ class MenuScene extends Phaser.Scene {
       if (this._lastResetKey === yesterdayKey) {
         return;
       }
-      const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
-      if (yesterdayScores.length > 0) {
+      const yesterdayScoresRaw = await client.getEntities('players', { date: yesterdayKey });
+      if (yesterdayScoresRaw.length > 0) {
         // Determine top score and all unique wallets with that score
-        yesterdayScores.sort((a, b) => b.score - a.score);
-        const topScore = yesterdayScores[0].score;
-        const topWalletsSet = new Set();
-        const topWalletInfo = new Map();
-        for (const s of yesterdayScores) {
-          if (s.score !== topScore) break;
-          if (!topWalletsSet.has(s.wallet)) {
-            topWalletsSet.add(s.wallet);
-            topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
-          }
-        }
+        const yesterdayScores = yesterdayScoresRaw.map(entry => ({ ...entry, score: toFiniteNumber(entry.score) }))
+          .sort((a, b) => b.score - a.score);
+        const topEntry = yesterdayScores[0];
+        const topScore = topEntry.score;
+        const topWallet = topEntry.wallet || "Anonymous";
+        const topUsername = topEntry.xUsername || "";
 
         // Calculate pot for the day
         let dailyPot = 0;
         try {
           const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
-          const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-          dailyPot = totalCollected * 0.9;
+          const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+          dailyPot = toFiniteNumber(totalCollected * 0.9);
         } catch (error) {
           console.error("Error calculating daily pot:", error);
         }
 
-        // Create/update a record per top wallet with a stable id
-        for (const wallet of topWalletsSet) {
-          const id = `winner_${yesterdayKey}_${wallet}`;
-          const payload = {
-            wallet,
-            xUsername: (topWalletInfo.get(wallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existing = await client.getEntity('daily_winners', id);
-          if (existing) {
-            console.log(`Updating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.updateEntity('daily_winners', id, payload);
-          } else {
-            console.log(`Creating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.createEntity('daily_winners', { id, ...payload });
-          }
+        const timestamp = Date.now();
+        const winnerId = `winner_${yesterdayKey}_${topWallet}`;
+        const payload = {
+          wallet: topWallet,
+          xUsername: topUsername,
+          score: topScore,
+          date: yesterdayKey,
+          timestamp,
+          dailyPot: dailyPot || 0
+        };
+        const existing = await client.getEntity('daily_winners', winnerId);
+        if (existing) {
+          console.log(`Updating past winner ${topWallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+          await client.updateEntity('daily_winners', winnerId, payload);
+        } else {
+          console.log(`Creating past winner ${topWallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
+          await client.createEntity('daily_winners', { id: winnerId, ...payload });
         }
 
-        // Maintain a legacy single entry for compatibility
-        const firstWallet = Array.from(topWalletsSet)[0];
-        if (firstWallet) {
-          const legacyId = `winner_${yesterdayKey}`;
-          const legacyPayload = {
-            wallet: firstWallet,
-            xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existingLegacy = await client.getEntity('daily_winners', legacyId);
-          if (existingLegacy) {
-            await client.updateEntity('daily_winners', legacyId, legacyPayload);
-          } else {
-            await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
+        const legacyId = `winner_${yesterdayKey}`;
+        const legacyPayload = {
+          wallet: topWallet,
+          xUsername: topUsername,
+          score: topScore,
+          date: yesterdayKey,
+          timestamp,
+          dailyPot: dailyPot || 0
+        };
+        const existingLegacy = await client.getEntity('daily_winners', legacyId);
+        if (existingLegacy) {
+          await client.updateEntity('daily_winners', legacyId, legacyPayload);
+        } else {
+          await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
+        }
+
+        try {
+          const existingForDate = await client.getEntities('daily_winners', { date: yesterdayKey });
+          const keep = new Set([winnerId, legacyId]);
+          for (const entry of existingForDate) {
+            if (entry?.id && !keep.has(entry.id)) {
+              await client.deleteEntity('daily_winners', entry.id);
+            }
           }
+        } catch (cleanupError) {
+          console.warn('Failed to prune stale winners', cleanupError);
+        }
+        try {
+          // Clear yesterday's leaderboard entries so only past winners retain addresses
+          const entriesToDelete = yesterdayScores.filter(entry => entry?.id);
+          if (entriesToDelete.length > 0) {
+            const results = await Promise.allSettled(
+              entriesToDelete.map(entry => client.deleteEntity('players', entry.id))
+            );
+            results.forEach((result, index) => {
+              if (result.status === 'rejected') {
+                const failed = entriesToDelete[index];
+                console.warn(`Failed to remove player entry ${failed?.id} for ${yesterdayKey}`, result.reason);
+              }
+            });
+          }
+        } catch (pruneError) {
+          console.warn('Failed to clear daily leaderboard entries for rollover', pruneError);
         }
       }
       if (this.walletAddress) {
@@ -993,6 +1036,20 @@ class GameScene extends Phaser.Scene {
       this.biteSound = null;
     }
 
+    if (this.cache.audio.exists("turnSound")) {
+      this.turnSound = this.sound.add("turnSound", { volume: 0.6 });
+    } else {
+      console.log("Turn sound not found");
+      this.turnSound = null;
+    }
+
+    if (this.cache.audio.exists("deathSound")) {
+      this.deathSound = this.sound.add("deathSound", { volume: 0.7 });
+    } else {
+      console.log("Death sound not found");
+      this.deathSound = null;
+    }
+
     this.enableMobileAudio();
 
     // Initialize sprite pools
@@ -1056,8 +1113,20 @@ class GameScene extends Phaser.Scene {
   }
 
   changeDirection(x, y) {
-    if (this.direction.x !== -x || this.direction.y !== -y) {
-      this.nextDirection = { x, y };
+    const isOpposite = this.direction.x === -x && this.direction.y === -y;
+    if (isOpposite) {
+      return;
+    }
+
+    const hasChanged = this.nextDirection.x !== x || this.nextDirection.y !== y;
+    this.nextDirection = { x, y };
+
+    if (hasChanged && this.turnSound) {
+      try {
+        this.turnSound.play();
+      } catch (error) {
+        console.log("Could not play turn sound:", error);
+      }
     }
   }
 
@@ -1204,27 +1273,128 @@ class GameScene extends Phaser.Scene {
   }
 
   async gameOver() {
+    if (this.deathSound) {
+      try {
+        this.deathSound.play();
+      } catch (error) {
+        console.log("Could not play death sound:", error);
+      }
+    }
+
     this.gameTimer.destroy();
+    let madeLeaderboard = false;
+    let madeTopScore = false;
     try {
       const { todayKey } = await getPeriodData();
+      const existingScores = await client.getEntities('players', { date: todayKey }).catch(() => []);
       const uniqueId = `${this.playerWallet}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const timestamp = Date.now();
+      const safeExisting = Array.isArray(existingScores) ? existingScores : [];
       const playerData = {
         id: uniqueId,
         wallet: this.playerWallet,
         xUsername: this.playerX || "",
         score: this.score,
-        timestamp: Date.now(),
+        timestamp,
         date: todayKey
       };
       await client.createEntity('players', playerData);
+      const result = await this.enforceDailyTopFive(todayKey, playerData, safeExisting);
+      madeLeaderboard = result.madeLeaderboard;
+      madeTopScore = result.madeTopScore;
     } catch (error) {
       console.error("Error saving score:", error);
     }
     this.scene.start("GameOverScene", {
       score: this.score,
       wallet: this.playerWallet,
-      xUsername: this.playerX
+      xUsername: this.playerX,
+      madeLeaderboard,
+      madeTopScore
     });
+  }
+
+  async enforceDailyTopFive(dateKey, newEntry, existingScoresRaw) {
+    if (!dateKey) {
+      return { madeLeaderboard: false, madeTopScore: false };
+    }
+
+    const result = {
+      madeLeaderboard: false,
+      madeTopScore: false
+    };
+
+    const normalizeEntry = (entry) => {
+      if (!entry || !entry.id) return null;
+      const score = toFiniteNumber(entry.score, 0);
+      const timestamp = toFiniteNumber(entry.timestamp, 0);
+      return { ...entry, score, timestamp };
+    };
+
+    const sortEntries = (entries) => entries.sort((a, b) => {
+      const diff = b.score - a.score;
+      if (diff !== 0) return diff;
+      return a.timestamp - b.timestamp;
+    });
+
+    const dedupeByScore = (entries) => {
+      const seen = new Set();
+      const unique = [];
+      for (const entry of entries) {
+        if (!seen.has(entry.score)) {
+          seen.add(entry.score);
+          unique.push(entry);
+        }
+      }
+      return unique;
+    };
+
+    const normalizedExisting = existingScoresRaw
+      .map(normalizeEntry)
+      .filter(entry => entry !== null);
+
+    const sortedExisting = sortEntries([...normalizedExisting]);
+    const uniqueExisting = dedupeByScore(sortedExisting);
+
+    const leaderboardFullBefore = uniqueExisting.length >= 5;
+    const previousFifthScore = leaderboardFullBefore ? uniqueExisting[4].score : -Infinity;
+    const previousTopScore = uniqueExisting.length > 0 ? uniqueExisting[0].score : -Infinity;
+
+    const normalizedNewEntry = normalizeEntry(newEntry);
+    const combined = normalizedNewEntry
+      ? [...normalizedExisting, normalizedNewEntry]
+      : [...normalizedExisting];
+    const combinedSorted = sortEntries(combined);
+    const uniqueCombined = dedupeByScore(combinedSorted);
+    const topFive = uniqueCombined.slice(0, 5);
+    const keepIds = new Set(topFive.map(entry => entry.id));
+
+    if (combinedSorted.length > 0) {
+      const toRemove = combinedSorted.filter(entry => entry.id && !keepIds.has(entry.id));
+      if (toRemove.length > 0) {
+        const deletions = toRemove.map(entry => client.deleteEntity('players', entry.id));
+        try {
+          const results = await Promise.allSettled(deletions);
+          results.forEach((result, index) => {
+            if (result.status === 'rejected') {
+              console.warn(`Failed to prune leaderboard entry ${toRemove[index]?.id}`, result.reason);
+            }
+          });
+        } catch (deleteError) {
+          console.warn('Error pruning leaderboard entries:', deleteError);
+        }
+      }
+    }
+
+    if (leaderboardFullBefore && normalizedNewEntry && keepIds.has(normalizedNewEntry.id) && normalizedNewEntry.score > previousFifthScore) {
+      result.madeLeaderboard = true;
+    }
+
+    if (normalizedNewEntry && topFive[0] && topFive[0].id === normalizedNewEntry.id && normalizedNewEntry.score > previousTopScore) {
+      result.madeTopScore = true;
+    }
+
+    return result;
   }
 }
 
@@ -1237,10 +1407,13 @@ class GameOverScene extends Phaser.Scene {
     this.finalScore = data.score;
     this.playerWallet = data.wallet;
     this.playerX = data.xUsername;
+    this.madeLeaderboard = Boolean(data.madeLeaderboard);
+    this.madeTopScore = Boolean(data.madeTopScore);
   }
 
   create() {
     const { width, height } = this.scale;
+    const isMobile = width < 800;
 
     this.add.text(width / 2, height * 0.2, "GAME OVER", {
       fontSize: "48px",
@@ -1255,41 +1428,74 @@ class GameOverScene extends Phaser.Scene {
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
-    this.add.text(width / 2, height * 0.45, `Wallet: ${this.playerWallet.substring(0, 12)}...`, {
+    const walletText = this.add.text(width / 2, height * 0.45, `Wallet: ${this.playerWallet.substring(0, 12)}...`, {
       fontSize: "16px",
       color: "#00ff41",
       fontFamily: "monospace"
     }).setOrigin(0.5);
 
+    let playerXText = null;
     if (this.playerX) {
-      this.add.text(width / 2, height * 0.5, `X: @${this.playerX}`, {
+      playerXText = this.add.text(width / 2, height * 0.5, `X: @${this.playerX}`, {
         fontSize: "16px",
         color: "#1da1f2",
         fontFamily: "monospace"
       }).setOrigin(0.5);
     }
 
-    const playAgainButton = this.add.rectangle(width / 2 - 100, height * 0.65, 180, 50, 0x00ff41);
+    let nextY = (playerXText || walletText).getBounds().bottom + (isMobile ? 24 : 32);
+    const messageWrapWidth = Math.min(width * 0.9, 480);
+
+    if (this.madeTopScore || this.madeLeaderboard) {
+      const messageConfig = this.madeTopScore
+        ? {
+            text: "Congratulations, you are the #1 score on the Daily Leaderboard!",
+            color: "#ffff00",
+            fontSize: isMobile ? "15px" : "18px"
+          }
+        : {
+            text: "Congratulations, you made it on the daily leaderboard!",
+            color: "#00ff41",
+            fontSize: isMobile ? "14px" : "16px"
+          };
+
+      const messageText = this.add.text(width / 2, nextY, messageConfig.text, {
+        fontSize: messageConfig.fontSize,
+        color: messageConfig.color,
+        fontFamily: "monospace",
+        fontWeight: "bold",
+        align: "center",
+        wordWrap: { width: messageWrapWidth, useAdvancedWrap: true }
+      }).setOrigin(0.5, 0);
+
+      messageText.setLineSpacing(isMobile ? 4 : 6);
+      nextY = messageText.getBounds().bottom + (isMobile ? 28 : 40);
+    }
+
+    const primaryButtonY = Math.max(nextY, height * (isMobile ? 0.7 : 0.65));
+
+    const playAgainButton = this.add.rectangle(width / 2 - 100, primaryButtonY, 180, 50, 0x00ff41);
     playAgainButton.setStrokeStyle(3, 0xffffff);
-    this.add.text(width / 2 - 100, height * 0.65, "PLAY AGAIN", {
+    this.add.text(width / 2 - 100, primaryButtonY, "PLAY AGAIN", {
       fontSize: "16px",
       color: "#000000",
       fontFamily: "monospace",
       fontWeight: "bold"
     }).setOrigin(0.5);
 
-    const leaderboardButton = this.add.rectangle(width / 2 + 100, height * 0.65, 180, 50, 0x333333);
+    const leaderboardButton = this.add.rectangle(width / 2 + 100, primaryButtonY, 180, 50, 0x333333);
     leaderboardButton.setStrokeStyle(3, 0x00ff41);
-    this.add.text(width / 2 + 100, height * 0.65, "LEADERBOARD", {
+    this.add.text(width / 2 + 100, primaryButtonY, "LEADERBOARD", {
       fontSize: "16px",
       color: "#00ff41",
       fontFamily: "monospace",
       fontWeight: "bold"
     }).setOrigin(0.5);
 
-    const menuButton = this.add.rectangle(width / 2, height * 0.8, 150, 40, 0x666666);
+    const menuButtonY = Math.max(primaryButtonY + (isMobile ? 80 : 70), height * 0.82);
+    const menuButton = this.add.rectangle(width / 2, menuButtonY, 150, 40, 0x666666);
     menuButton.setStrokeStyle(2, 0xffffff);
-    this.add.text(width / 2, height * 0.8, "MAIN MENU", {
+    this.add.text(width / 2, menuButtonY, "MAIN MENU", {
       fontSize: "14px",
       color: "#ffffff",
       fontFamily: "monospace"
@@ -1319,6 +1525,7 @@ class LeaderboardScene extends Phaser.Scene {
   constructor() {
     super({ key: "LeaderboardScene" });
     this.currentView = "leaderboard";
+    this._lastResetKey = null;
   }
 
   async create() {
@@ -1361,6 +1568,7 @@ class LeaderboardScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     await this.refreshView();
+    await this.ensurePreviousDayWinner();
   }
 
   async refreshView() {
@@ -1444,12 +1652,34 @@ class LeaderboardScene extends Phaser.Scene {
     try {
       const { todayKey } = await getPeriodData();
       const todayPayments = await client.getEntities('daily_payments', { date: todayKey });
-      const totalCollected = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-      const dailyPot = totalCollected * 0.9;
+      const totalCollected = todayPayments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+      const dailyPot = toFiniteNumber(totalCollected * 0.9);
       const todayScores = await client.getEntities('players', { date: todayKey });
-      // Show raw top scores (duplicates per wallet allowed)
-      todayScores.sort((a, b) => b.score - a.score);
-      const top = todayScores.slice(0, 5);
+      const sortedScores = todayScores
+        .map(entry => ({
+          ...entry,
+          score: toFiniteNumber(entry.score),
+          timestamp: toFiniteNumber(entry.timestamp, 0)
+        }))
+        .filter(entry => Number.isFinite(entry.score))
+        .sort((a, b) => {
+          const diff = b.score - a.score;
+          if (diff !== 0) return diff;
+          return a.timestamp - b.timestamp;
+        });
+
+      const seenScores = new Set();
+      const top = [];
+      for (const entry of sortedScores) {
+        if (seenScores.has(entry.score)) {
+          continue;
+        }
+        top.push(entry);
+        seenScores.add(entry.score);
+        if (top.length === 5) {
+          break;
+        }
+      }
 
       this.add.text(width / 2, 105, `💰 Daily Pot: ${dailyPot.toFixed(3)} SOL 💰`, {
         fontSize: "20px",
@@ -1471,7 +1701,8 @@ class LeaderboardScene extends Phaser.Scene {
           const rank = index + 1;
           const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}.`;
           const color = rank === 1 ? "#ffff00" : rank === 2 ? "#c0c0c0" : rank === 3 ? "#cd7f32" : "#ffffff";
-          let displayText = `${medal} ${player.wallet.substring(0, 8)}... - ${player.score}`;
+          const scoreValue = player.score;
+          let displayText = `${medal} ${player.wallet.substring(0, 8)}... - ${scoreValue}`;
           if (player.xUsername) {
             displayText += ` (@${player.xUsername})`;
           }
@@ -1536,7 +1767,9 @@ class LeaderboardScene extends Phaser.Scene {
 
     try {
       const allWinners = await client.getEntities('daily_winners');
-      const validWinners = allWinners.filter(w => w && w.wallet && w.score !== undefined && w.date);
+      const validWinners = allWinners
+        .filter(w => w && w.wallet && w.score !== undefined && w.date)
+        .map(w => ({ ...w, score: toFiniteNumber(w.score), dailyPot: toFiniteNumber(w.dailyPot) }));
 
       if (validWinners.length === 0) {
         this.add.text(width / 2, height / 2, "No past winners yet!\nBe the first daily champion!", {
@@ -1571,16 +1804,16 @@ class LeaderboardScene extends Phaser.Scene {
         const lineGap = 18;
         for (const [dateKey, entries] of visibleGroups) {
           // Determine the top score for this date and only show winners matching that score
-          entries.sort((a, b) => b.score - a.score);
-          const topScore = entries[0]?.score || 0;
-          const winners = entries.filter(e => e.score === topScore);
+          const sortedEntries = [...entries].sort((a, b) => b.score - a.score);
+          const topScore = sortedEntries[0]?.score || 0;
+          const winners = sortedEntries.filter(e => e.score === topScore);
           // Deduplicate wallets in case of mixed legacy entries
           const uniq = new Map();
           for (const w of winners) {
             if (!uniq.has(w.wallet)) uniq.set(w.wallet, w);
           }
           const winnersList = Array.from(uniq.values());
-          const totalPot = winnersList[0]?.dailyPot || 0;
+          const totalPot = toFiniteNumber(winnersList[0]?.dailyPot ?? sortedEntries[0]?.dailyPot ?? 0);
           const dateStr = new Date(dateKey + "T00:00:00").toLocaleDateString();
 
           // Group header
@@ -1680,77 +1913,92 @@ class LeaderboardScene extends Phaser.Scene {
       if (this._lastResetKey === yesterdayKey) {
         return;
       }
-      const yesterdayScores = await client.getEntities('players', { date: yesterdayKey });
-
-      if (yesterdayScores.length > 0) {
-        yesterdayScores.sort((a, b) => b.score - a.score);
-        const topScore = yesterdayScores[0].score;
-        const topWalletsSet = new Set();
-        const topWalletInfo = new Map();
-        for (const s of yesterdayScores) {
-          if (s.score !== topScore) break;
-          if (!topWalletsSet.has(s.wallet)) {
-            topWalletsSet.add(s.wallet);
-            topWalletInfo.set(s.wallet, { xUsername: s.xUsername || "" });
-          }
-        }
-
-        let dailyPot = 0;
-        try {
-          const yesterdayPayments = await client.getEntities('daily_payments', { date: yesterdayKey });
-          const totalCollected = yesterdayPayments.reduce((sum, payment) => sum + payment.amount, 0);
-          dailyPot = totalCollected * 0.9;
-        } catch (error) {
-          console.error("Error calculating daily pot:", error);
-        }
-
-        // Create/update a record per top wallet with a stable id
-        for (const wallet of topWalletsSet) {
-          const id = `winner_${yesterdayKey}_${wallet}`;
-          const payload = {
-            wallet,
-            xUsername: (topWalletInfo.get(wallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existing = await client.getEntity('daily_winners', id);
-          if (existing) {
-            console.log(`Updating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.updateEntity('daily_winners', id, payload);
-          } else {
-            console.log(`Creating past winner ${wallet} for ${yesterdayKey}: score ${topScore}, pot ${dailyPot.toFixed(3)} SOL`);
-            await client.createEntity('daily_winners', { id, ...payload });
-          }
-        }
-
-        // Maintain a legacy single entry for compatibility
-        const firstWallet = Array.from(topWalletsSet)[0];
-        if (firstWallet) {
-          const legacyId = `winner_${yesterdayKey}`;
-          const legacyPayload = {
-            wallet: firstWallet,
-            xUsername: (topWalletInfo.get(firstWallet)?.xUsername) || "",
-            score: topScore,
-            date: yesterdayKey,
-            timestamp: Date.now(),
-            dailyPot: dailyPot || 0
-          };
-          const existingLegacy = await client.getEntity('daily_winners', legacyId);
-          if (existingLegacy) {
-            await client.updateEntity('daily_winners', legacyId, legacyPayload);
-          } else {
-            await client.createEntity('daily_winners', { id: legacyId, ...legacyPayload });
-          }
-        }
-      }
-      // Refresh the view so the daily pot resets visually
+      await this.persistWinnerForDate(yesterdayKey);
       try { await this.refreshView(); } catch (_) {}
-      // Mark handled to avoid duplicate work within the reset window
       this._lastResetKey = yesterdayKey;
     } catch (error) {
       console.error("Error handling daily reset:", error);
+    }
+  }
+
+  async ensurePreviousDayWinner() {
+    try {
+      const { yesterdayKey } = await getPeriodData();
+      if (!yesterdayKey) return;
+      const existing = await client.getEntity('daily_winners', `winner_${yesterdayKey}`);
+      if (!existing) {
+        await this.persistWinnerForDate(yesterdayKey);
+        this._lastResetKey = yesterdayKey;
+        try { await this.refreshView(); } catch (_) {}
+      }
+    } catch (error) {
+      console.error('Error ensuring previous winner:', error);
+    }
+  }
+
+  async persistWinnerForDate(dateKey) {
+    if (!dateKey) return;
+    const scoresRaw = await client.getEntities('players', { date: dateKey });
+    if (!scoresRaw || scoresRaw.length === 0) return;
+
+    const sortedScores = scoresRaw.map(entry => ({ ...entry, score: toFiniteNumber(entry.score) }))
+      .sort((a, b) => b.score - a.score);
+    const topEntry = sortedScores[0];
+    const topWallet = topEntry.wallet || 'Anonymous';
+    const topUsername = topEntry.xUsername || '';
+    const topScore = toFiniteNumber(topEntry.score);
+
+    let dailyPot = 0;
+    try {
+      const payments = await client.getEntities('daily_payments', { date: dateKey });
+      const totalCollected = payments.reduce((sum, payment) => sum + toFiniteNumber(payment.amount), 0);
+      dailyPot = toFiniteNumber(totalCollected * 0.9);
+    } catch (error) {
+      console.error('Error calculating daily pot:', error);
+    }
+
+    const timestamp = Date.now();
+    const winnerId = `winner_${dateKey}_${topWallet}`;
+    const payload = {
+      wallet: topWallet,
+      xUsername: topUsername,
+      score: topScore,
+      date: dateKey,
+      timestamp,
+      dailyPot: dailyPot || 0
+    };
+    const existingWinner = await client.getEntity('daily_winners', winnerId);
+    if (existingWinner) {
+      await client.updateEntity('daily_winners', winnerId, payload);
+    } else {
+      await client.createEntity('daily_winners', { id: winnerId, ...payload });
+    }
+
+    const legacyId = `winner_${dateKey}`;
+    const legacyPayload = { ...payload, id: legacyId };
+    const existingLegacy = await client.getEntity('daily_winners', legacyId);
+    if (existingLegacy) {
+      await client.updateEntity('daily_winners', legacyId, legacyPayload);
+    } else {
+      await client.createEntity('daily_winners', legacyPayload);
+    }
+
+    try {
+      // Clear the completed day's leaderboard entries so only past winners retain addresses
+      const entriesToDelete = sortedScores.filter(entry => entry?.id);
+      if (entriesToDelete.length > 0) {
+        const results = await Promise.allSettled(
+          entriesToDelete.map(entry => client.deleteEntity('players', entry.id))
+        );
+        results.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            const failed = entriesToDelete[index];
+            console.warn(`Failed to remove player entry ${failed?.id} for ${dateKey}`, result.reason);
+          }
+        });
+      }
+    } catch (pruneError) {
+      console.warn('Failed to clear daily leaderboard entries for rollover', pruneError);
     }
   }
 }
@@ -1784,3 +2032,4 @@ window.addEventListener('resize', updateGameOrientation);
 window.addEventListener('orientationchange', updateGameOrientation);
 // Run once after boot
 setTimeout(updateGameOrientation, 0);
+
